@@ -61,7 +61,7 @@ func init() {
 		MaxAttempts:  3,
 	}
 
-	log.Println("Kafka writer initialized successfully")
+	log.Printf("Initialized HTTP client and Kafka writer (broker: %s, topic: aqi-raw)", kafkaBroker)
 }
 
 // --- Data Structures (JSON Mapping) ---
@@ -119,8 +119,8 @@ type AQIEvent struct {
 	Longitude   float64 `json:"longitude"`
 }
 
-func fetchData(url string) ([]byte, error) {
-	req, err := http.NewRequest("GET", url, nil)
+func fetchData(requestURL string) ([]byte, error) {
+	req, err := http.NewRequest("GET", requestURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -215,29 +215,29 @@ func pollAQI(city string, wg *sync.WaitGroup) {
 }
 
 func pollCity(city string) {
-	fmt.Println("Checking AQI for city:", city)
+	log.Printf("Checking AQI for city: %s", city)
 
 	apiURL, err := buildAQIURL(city)
 	if err != nil {
-		fmt.Printf("[%s] Error building URL: %v\n", city, err)
+		log.Printf("[%s] Error building URL: %v", city, err)
 		return
 	}
 
 	body, err := fetchData(apiURL)
 	if err != nil {
-		fmt.Printf("[%s] Error fetching AQI: %v\n", city, err)
+		log.Printf("[%s] Error fetching AQI: %v", city, err)
 		return
 	}
 
 	// Parse JSON response
 	var aqiResp AQIResponse
 	if err := json.Unmarshal(body, &aqiResp); err != nil {
-		fmt.Printf("[%s] Error parsing AQI JSON: %v\n", city, err)
+		log.Printf("[%s] Error parsing AQI JSON: %v", city, err)
 		return
 	}
 
 	if aqiResp.Status != "ok" {
-		fmt.Printf("[%s] API returned non-ok status: %s\n", city, aqiResp.Status)
+		log.Printf("[%s] API returned non-ok status: %s", city, aqiResp.Status)
 		return
 	}
 
@@ -249,21 +249,24 @@ func pollCity(city string) {
 	defer cancel()
 
 	if err := sendToKafka(ctx, event); err != nil {
-		fmt.Printf("[%s] Error sending to Kafka: %v\n", city, err)
+		log.Printf("[%s] Error sending to Kafka: %v", city, err)
 	} else {
-		fmt.Printf("[%s] ✅ Sent to Kafka - AQI: %d\n", city, event.AQI)
+		log.Printf("[%s] ✅ Sent to Kafka - AQI: %d", city, event.AQI)
 	}
 }
 
 // --- MAIN ---
 func main() {
-	fmt.Println("Starting AQI Poller...")
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	log.Printf("Starting AQI Poller service")
 
 	defer func() {
+		log.Println("Shutting down poller...")
 		if err := kafkaWriter.Close(); err != nil {
 			log.Printf("Failed to close Kafka writer: %v", err)
 		}
 		httpClient.CloseIdleConnections()
+		log.Printf("Shutdown complete")
 	}()
 
 	// List of cities to monitor
@@ -274,6 +277,8 @@ func main() {
 		"turin",
 		"naples",
 	}
+
+	log.Printf("Monitoring %d cities: %v", len(cities), cities)
 
 	var wg sync.WaitGroup
 
