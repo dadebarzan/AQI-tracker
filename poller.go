@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ var apiKey string
 var apiHost string
 var kafkaBroker string
 var kafkaWriter *kafkago.Writer
+var httpClient *http.Client
 
 func init() {
 	// Load .env file
@@ -27,7 +29,7 @@ func init() {
 	// Load environment variables
 	apiKey = os.Getenv("AQI_API_KEY")
 	apiHost = os.Getenv("AQI_API_HOST")
-	kafkaBroker = os.Getenv("KAFKA_BROKERS")
+	kafkaBroker = os.Getenv("KAFKA_BROKER")
 	if apiKey == "" || apiHost == "" {
 		log.Fatal("Missing required environment variables: AQI_API_KEY and AQI_API_HOST")
 	}
@@ -36,6 +38,18 @@ func init() {
 		kafkaBroker = "kafka:29092" // Default
 	}
 
+	// Initialize shared HTTP client with connection pooling
+	httpClient = &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 10,
+			IdleConnTimeout:     90 * time.Second,
+			DisableCompression:  false,
+		},
+	}
+
+	// Initialize Kafka writer
 	kafkaWriter = &kafkago.Writer{
 		Addr:         kafkago.TCP(kafkaBroker),
 		Topic:        "aqi-raw",
@@ -106,16 +120,12 @@ type AQIEvent struct {
 }
 
 func fetchData(url string) ([]byte, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
-
-	fmt.Println("Creating HTTP request...")
-
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	res, err := client.Do(req)
+	res, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute request: %w", err)
 	}
@@ -133,22 +143,6 @@ func fetchData(url string) ([]byte, error) {
 	}
 
 	return body, nil
-}
-
-// Save data to file for debugging
-func saveToFile(filename string, data []byte) error {
-	if err := os.MkdirAll("./output", 0755); err != nil {
-		return err
-	}
-
-	file, err := os.Create(filename)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	_, err = file.Write(data)
-	return err
 }
 
 func sendToKafka(ctx context.Context, event AQIEvent) error {
@@ -185,6 +179,28 @@ func transformToEvent(city string, aqiResp AQIResponse) AQIEvent {
 	}
 }
 
+func buildAQIURL(city string) (string, error) {
+	// Validate city name (basic check)
+	if city == "" {
+		return "", fmt.Errorf("city name cannot be empty")
+	}
+
+	escapedCity := url.PathEscape(city)
+
+	// Build the full URL
+	u := &url.URL{
+		Scheme: "https",
+		Host:   apiHost,
+		Path:   fmt.Sprintf("/feed/%s/", escapedCity),
+	}
+
+	q := u.Query()
+	q.Set("token", apiKey)
+	u.RawQuery = q.Encode()
+
+	return u.String(), nil
+}
+
 func pollAQI(city string, wg *sync.WaitGroup) {
 	defer wg.Done()
 
@@ -200,9 +216,14 @@ func pollAQI(city string, wg *sync.WaitGroup) {
 
 func pollCity(city string) {
 	fmt.Println("Checking AQI for city:", city)
-	url := fmt.Sprintf("https://%s/feed/%s/?token=%s", apiHost, city, apiKey)
 
-	body, err := fetchData(url)
+	apiURL, err := buildAQIURL(city)
+	if err != nil {
+		fmt.Printf("[%s] Error building URL: %v\n", city, err)
+		return
+	}
+
+	body, err := fetchData(apiURL)
 	if err != nil {
 		fmt.Printf("[%s] Error fetching AQI: %v\n", city, err)
 		return
@@ -228,7 +249,7 @@ func pollCity(city string) {
 	defer cancel()
 
 	if err := sendToKafka(ctx, event); err != nil {
-		fmt.Printf("[%s] Error sending to Kafka: %v", city, err)
+		fmt.Printf("[%s] Error sending to Kafka: %v\n", city, err)
 	} else {
 		fmt.Printf("[%s] ✅ Sent to Kafka - AQI: %d\n", city, event.AQI)
 	}
@@ -242,6 +263,7 @@ func main() {
 		if err := kafkaWriter.Close(); err != nil {
 			log.Printf("Failed to close Kafka writer: %v", err)
 		}
+		httpClient.CloseIdleConnections()
 	}()
 
 	// List of cities to monitor
@@ -255,7 +277,6 @@ func main() {
 
 	var wg sync.WaitGroup
 
-	// Start a goroutine for each city
 	for _, city := range cities {
 		wg.Add(1)
 		go pollAQI(city, &wg)
