@@ -11,7 +11,7 @@ RUN go mod download
 COPY *.go ./
 
 # Build the application
-RUN go build -o poller poller.go
+RUN go build -o poller .
 
 # Runtime stage
 FROM alpine:latest
