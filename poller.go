@@ -1,0 +1,292 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"net/url"
+	"os"
+	"sync"
+	"time"
+
+	"github.com/joho/godotenv"
+	kafkago "github.com/segmentio/kafka-go"
+)
+
+var apiKey string
+var apiHost string
+var kafkaBroker string
+var kafkaWriter *kafkago.Writer
+var httpClient *http.Client
+
+func init() {
+	// Load .env file
+	_ = godotenv.Load()
+
+	// Load environment variables
+	apiKey = os.Getenv("AQI_API_KEY")
+	apiHost = os.Getenv("AQI_API_HOST")
+	kafkaBroker = os.Getenv("KAFKA_BROKER")
+	if apiKey == "" || apiHost == "" {
+		log.Fatal("Missing required environment variables: AQI_API_KEY and AQI_API_HOST")
+	}
+
+	if kafkaBroker == "" {
+		kafkaBroker = "kafka:29092" // Default
+	}
+
+	// Initialize shared HTTP client with connection pooling
+	httpClient = &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 10,
+			IdleConnTimeout:     90 * time.Second,
+			DisableCompression:  false,
+		},
+	}
+
+	// Initialize Kafka writer
+	kafkaWriter = &kafkago.Writer{
+		Addr:         kafkago.TCP(kafkaBroker),
+		Topic:        "aqi-raw",
+		Balancer:     &kafkago.Hash{},
+		WriteTimeout: 10 * time.Second,
+		ReadTimeout:  10 * time.Second,
+		RequiredAcks: kafkago.RequireOne,
+		Compression:  kafkago.Snappy,
+		MaxAttempts:  3,
+	}
+
+	log.Printf("Initialized HTTP client and Kafka writer (broker: %s, topic: aqi-raw)", kafkaBroker)
+}
+
+// --- Data Structures (JSON Mapping) ---
+type AQIResponse struct {
+	Status string  `json:"status"`
+	Data   AQIData `json:"data"`
+}
+
+type AQIData struct {
+	AQI         int      `json:"aqi"`
+	Idx         int      `json:"idx"`
+	City        CityInfo `json:"city"`
+	Dominentpol string   `json:"dominentpol"`
+	IAQI        IQAI     `json:"iaqi"`
+	Time        TimeInfo `json:"time"`
+}
+
+type CityInfo struct {
+	Geo      [2]float64 `json:"geo"`
+	Name     string     `json:"name"`
+	URL      string     `json:"url"`
+	Location string     `json:"location"`
+}
+
+type IQAI struct {
+	CO   Pollutant `json:"co"`
+	NO2  Pollutant `json:"no2"`
+	PM10 Pollutant `json:"pm10"`
+	PM25 Pollutant `json:"pm25"`
+	Temp Pollutant `json:"t"`
+}
+
+type Pollutant struct {
+	V float64 `json:"v"`
+}
+
+type TimeInfo struct {
+	S   string `json:"s"`
+	Tz  string `json:"tz"`
+	V   int64  `json:"v"`
+	ISO string `json:"iso"`
+}
+
+// AQI event to send to Kafka
+type AQIEvent struct {
+	City        string  `json:"city"`
+	AQI         int     `json:"aqi"`
+	CO          float64 `json:"co"`
+	NO2         float64 `json:"no2"`
+	PM10        float64 `json:"pm10"`
+	PM25        float64 `json:"pm25"`
+	Temperature float64 `json:"temperature"`
+	Timestamp   int64   `json:"timestamp"`
+	Latitude    float64 `json:"latitude"`
+	Longitude   float64 `json:"longitude"`
+}
+
+func fetchData(requestURL string) ([]byte, error) {
+	req, err := http.NewRequest("GET", requestURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	res, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer res.Body.Close()
+
+	// Check status code before reading body
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		body, _ := io.ReadAll(res.Body)
+		return nil, fmt.Errorf("non-2xx response: %d %s - %s", res.StatusCode, res.Status, string(body))
+	}
+
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	return body, nil
+}
+
+func sendToKafka(ctx context.Context, event AQIEvent) error {
+	eventJSON, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("failed to marshal event: %w", err)
+	}
+
+	err = kafkaWriter.WriteMessages(ctx, kafkago.Message{
+		Key:   []byte(event.City),
+		Value: eventJSON,
+		Time:  time.Now(),
+	},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to write message: %w", err)
+	}
+
+	return nil
+}
+
+func transformToEvent(city string, aqiResp AQIResponse) AQIEvent {
+	return AQIEvent{
+		City:        city,
+		AQI:         aqiResp.Data.AQI,
+		CO:          aqiResp.Data.IAQI.CO.V,
+		NO2:         aqiResp.Data.IAQI.NO2.V,
+		PM10:        aqiResp.Data.IAQI.PM10.V,
+		PM25:        aqiResp.Data.IAQI.PM25.V,
+		Temperature: aqiResp.Data.IAQI.Temp.V,
+		Timestamp:   aqiResp.Data.Time.V,
+		Latitude:    aqiResp.Data.City.Geo[0],
+		Longitude:   aqiResp.Data.City.Geo[1],
+	}
+}
+
+func buildAQIURL(city string) (string, error) {
+	// Validate city name (basic check)
+	if city == "" {
+		return "", fmt.Errorf("city name cannot be empty")
+	}
+
+	escapedCity := url.PathEscape(city)
+
+	// Build the full URL
+	u := &url.URL{
+		Scheme: "https",
+		Host:   apiHost,
+		Path:   fmt.Sprintf("/feed/%s/", escapedCity),
+	}
+
+	q := u.Query()
+	q.Set("token", apiKey)
+	u.RawQuery = q.Encode()
+
+	return u.String(), nil
+}
+
+func pollAQI(city string, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	pollCity(city)
+
+	for range ticker.C {
+		pollCity(city)
+	}
+}
+
+func pollCity(city string) {
+	log.Printf("Checking AQI for city: %s", city)
+
+	apiURL, err := buildAQIURL(city)
+	if err != nil {
+		log.Printf("[%s] Error building URL: %v", city, err)
+		return
+	}
+
+	body, err := fetchData(apiURL)
+	if err != nil {
+		log.Printf("[%s] Error fetching AQI: %v", city, err)
+		return
+	}
+
+	// Parse JSON response
+	var aqiResp AQIResponse
+	if err := json.Unmarshal(body, &aqiResp); err != nil {
+		log.Printf("[%s] Error parsing AQI JSON: %v", city, err)
+		return
+	}
+
+	if aqiResp.Status != "ok" {
+		log.Printf("[%s] API returned non-ok status: %s", city, aqiResp.Status)
+		return
+	}
+
+	// Transform to event
+	event := transformToEvent(city, aqiResp)
+
+	// Send to Kafka with context timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := sendToKafka(ctx, event); err != nil {
+		log.Printf("[%s] Error sending to Kafka: %v", city, err)
+	} else {
+		log.Printf("[%s] ✅ Sent to Kafka - AQI: %d", city, event.AQI)
+	}
+}
+
+// --- MAIN ---
+func main() {
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	log.Printf("Starting AQI Poller service")
+
+	defer func() {
+		log.Println("Shutting down poller...")
+		if err := kafkaWriter.Close(); err != nil {
+			log.Printf("Failed to close Kafka writer: %v", err)
+		}
+		httpClient.CloseIdleConnections()
+		log.Printf("Shutdown complete")
+	}()
+
+	// List of cities to monitor
+	cities := []string{
+		"milan",
+		"rome",
+		"venice",
+		"turin",
+		"naples",
+	}
+
+	log.Printf("Monitoring %d cities: %v", len(cities), cities)
+
+	var wg sync.WaitGroup
+
+	for _, city := range cities {
+		wg.Add(1)
+		go pollAQI(city, &wg)
+	}
+
+	// Wait indefinitely (or until all goroutines finish, which they won't in this case)
+	wg.Wait()
+}
