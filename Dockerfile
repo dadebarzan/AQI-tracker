@@ -8,7 +8,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 # Copy source code
-COPY . .
+COPY *.go ./
 
 # Build the application
 RUN go build -o poller poller.go

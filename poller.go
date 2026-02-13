@@ -26,7 +26,7 @@ func init() {
 	// Load environment variables
 	apiKey = os.Getenv("AQI_API_KEY")
 	apiHost = os.Getenv("AQI_API_HOST")
-	kafkaBroker = os.Getenv("KAFKA_BROKER")
+	kafkaBroker = os.Getenv("KAFKA_BROKERS")
 	if apiKey == "" || apiHost == "" {
 		log.Fatal("Missing required environment variables: AQI_API_KEY and AQI_API_HOST")
 	}
@@ -91,16 +91,32 @@ type AQIEvent struct {
 	Longitude   float64 `json:"longitude"`
 }
 
-func fetchData(url string, host string) ([]byte, error) {
+func fetchData(url string) ([]byte, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
-	req, _ := http.NewRequest("GET", url, nil)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
 
 	res, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to execute request: %w", err)
 	}
 	defer res.Body.Close()
-	return io.ReadAll(res.Body)
+
+	// Check status code before reading body
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		body, _ := io.ReadAll(res.Body)
+		return nil, fmt.Errorf("non-2xx response: %d %s - %s", res.StatusCode, res.Status, string(body))
+	}
+
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	return body, nil
 }
 
 // Save data to file for debugging
@@ -178,7 +194,7 @@ func pollCity(city string) {
 	fmt.Println("Checking AQI for city:", city)
 	url := fmt.Sprintf("https://%s/feed/%s/?token=%s", apiHost, city, apiKey)
 
-	body, err := fetchData(url, apiHost)
+	body, err := fetchData(url)
 	if err != nil {
 		fmt.Printf("[%s] Error fetching AQI: %v\n", city, err)
 		return
