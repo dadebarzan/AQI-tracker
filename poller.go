@@ -18,6 +18,7 @@ import (
 var apiKey string
 var apiHost string
 var kafkaBroker string
+var kafkaWriter *kafkago.Writer
 
 func init() {
 	// Load .env file
@@ -34,6 +35,19 @@ func init() {
 	if kafkaBroker == "" {
 		kafkaBroker = "kafka:29092" // Default
 	}
+
+	kafkaWriter = &kafkago.Writer{
+		Addr:         kafkago.TCP(kafkaBroker),
+		Topic:        "aqi-raw",
+		Balancer:     &kafkago.Hash{},
+		WriteTimeout: 10 * time.Second,
+		ReadTimeout:  10 * time.Second,
+		RequiredAcks: kafkago.RequireOne,
+		Compression:  kafkago.Snappy,
+		MaxAttempts:  3,
+	}
+
+	log.Println("Kafka writer initialized successfully")
 }
 
 // --- Data Structures (JSON Mapping) ---
@@ -92,7 +106,9 @@ type AQIEvent struct {
 }
 
 func fetchData(url string) ([]byte, error) {
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	fmt.Println("Creating HTTP request...")
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -135,25 +151,17 @@ func saveToFile(filename string, data []byte) error {
 	return err
 }
 
-func sendToKafka(topic string, event AQIEvent) error {
-	conn, err := kafkago.DialLeader(context.Background(), "tcp", kafkaBroker, topic, 0)
-	if err != nil {
-		return fmt.Errorf("failed to connect to Kafka: %w", err)
-	}
-	defer conn.Close()
-
-	conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-
+func sendToKafka(ctx context.Context, event AQIEvent) error {
 	eventJSON, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("failed to marshal event: %w", err)
 	}
 
-	_, err = conn.WriteMessages(
-		kafkago.Message{
-			Key:   []byte(event.City),
-			Value: eventJSON,
-		},
+	err = kafkaWriter.WriteMessages(ctx, kafkago.Message{
+		Key:   []byte(event.City),
+		Value: eventJSON,
+		Time:  time.Now(),
+	},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to write message: %w", err)
@@ -215,8 +223,11 @@ func pollCity(city string) {
 	// Transform to event
 	event := transformToEvent(city, aqiResp)
 
-	// Send to Kafka
-	if err := sendToKafka("aqi-raw", event); err != nil {
+	// Send to Kafka with context timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := sendToKafka(ctx, event); err != nil {
 		fmt.Printf("[%s] Error sending to Kafka: %v", city, err)
 	} else {
 		fmt.Printf("[%s] ✅ Sent to Kafka - AQI: %d\n", city, event.AQI)
@@ -225,7 +236,13 @@ func pollCity(city string) {
 
 // --- MAIN ---
 func main() {
-	fmt.Println("Starting Poller...")
+	fmt.Println("Starting AQI Poller...")
+
+	defer func() {
+		if err := kafkaWriter.Close(); err != nil {
+			log.Printf("Failed to close Kafka writer: %v", err)
+		}
+	}()
 
 	// List of cities to monitor
 	cities := []string{
