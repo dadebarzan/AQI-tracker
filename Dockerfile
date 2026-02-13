@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.21-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 WORKDIR /app
 
@@ -20,7 +20,6 @@ WORKDIR /app
 
 # Copy the binary from builder
 COPY --from=builder /app/poller .
-COPY --from=builder /app/.env .
 
 # Run the poller
 CMD ["./poller"]

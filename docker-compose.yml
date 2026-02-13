@@ -16,7 +16,7 @@ services:
       - backend-network
 
   kafka:
-    image: confluentinc/cp-kafka:latest
+    image: confluentinc/cp-kafka:7.5.0
     container_name: kafka
     depends_on:
       zookeeper:
@@ -26,6 +26,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 30s
     ports:
       - "9092:9092"
       - "29092:29092"
@@ -36,18 +37,21 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
     networks:
       - backend-network
 
   postgres:
     image: postgres:15-alpine
     container_name: postgres
+    env_file:
+      - ./.env
     environment:
-      - POSTGRES_USER=${DB_USER:-postgres}
-      - POSTGRES_PASSWORD=${DB_PASS:-postgres}
-      - POSTGRES_DB=${DB_NAME:-mico_db}
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASS}
+      - POSTGRES_DB=${DB_NAME}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -69,6 +73,31 @@ services:
       KAFKA_BROKERS: kafka:29092
     networks:
       - backend-network
+
+  poller:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: poller
+    env_file:
+      - ./.env
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      - DB_USER=${DB_USER}
+      - DB_PASS=${DB_PASS}
+      - DB_NAME=${DB_NAME}
+      - KAFKA_BROKERS=kafka:29092
+      - AQI_API_KEY=${AQI_API_KEY}
+      - AQI_API_HOST=${AQI_API_HOST}
+    volumes:
+      - ./output:/app/output
+    networks:
+      - backend-network
+    restart: unless-stopped
 
 networks:
   backend-network:

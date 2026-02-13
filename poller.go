@@ -1,61 +1,99 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/joho/godotenv"
+	kafkago "github.com/segmentio/kafka-go"
 )
 
 var apiKey string
-var apiHostEvents string
-var apiHostMedals string
+var apiHost string
+var kafkaBroker string
 
 func init() {
 	// Load .env file
-	err := godotenv.Load()
-	if err != nil {
-		log.Fatal("Error loading .env file")
-	}
+	_ = godotenv.Load()
 
 	// Load environment variables
-	apiKey = os.Getenv("RAPIDAPI_KEY")
-	apiHostEvents = os.Getenv("RAPIDAPI_HOST_EVENTS")
-	apiHostMedals = os.Getenv("RAPIDAPI_HOST_MEDALS")
+	apiKey = os.Getenv("AQI_API_KEY")
+	apiHost = os.Getenv("AQI_API_HOST")
+	kafkaBroker = os.Getenv("KAFKA_BROKER")
+	if apiKey == "" || apiHost == "" {
+		log.Fatal("Missing required environment variables: AQI_API_KEY and AQI_API_HOST")
+	}
 
-	if apiKey == "" || apiHostEvents == "" || apiHostMedals == "" {
-		log.Fatal("Missing required environment variables in .env file")
+	if kafkaBroker == "" {
+		kafkaBroker = "kafka:29092" // Default
 	}
 }
 
 // --- Data Structures (JSON Mapping) ---
-type Event struct {
-	ID           string `json:"id"`
-	Discipline   string `json:"discipline"`
-	IsMedalEvent bool   `json:"isMedalEvent"`
-	Teams        []struct {
-		Code string `json:"code"`
-	} `json:"teams"`
+type AQIResponse struct {
+	Status string  `json:"status"`
+	Data   AQIData `json:"data"`
 }
 
-type EventResponse struct {
-	Events []Event `json:"events"`
+type AQIData struct {
+	AQI         int      `json:"aqi"`
+	Idx         int      `json:"idx"`
+	City        CityInfo `json:"city"`
+	Dominentpol string   `json:"dominentpol"`
+	IAQI        IQAI     `json:"iaqi"`
+	Time        TimeInfo `json:"time"`
 }
 
-type MedalStandings struct {
-	Medals map[string]interface{} `json:"medals"` // Dynamic mappging for medal standings
+type CityInfo struct {
+	Geo      [2]float64 `json:"geo"`
+	Name     string     `json:"name"`
+	URL      string     `json:"url"`
+	Location string     `json:"location"`
+}
+
+type IQAI struct {
+	CO   Pollutant `json:"co"`
+	NO2  Pollutant `json:"no2"`
+	PM10 Pollutant `json:"pm10"`
+	PM25 Pollutant `json:"pm25"`
+	Temp Pollutant `json:"t"`
+}
+
+type Pollutant struct {
+	V float64 `json:"v"`
+}
+
+type TimeInfo struct {
+	S   string `json:"s"`
+	Tz  string `json:"tz"`
+	V   int64  `json:"v"`
+	ISO string `json:"iso"`
+}
+
+// AQI event to send to Kafka
+type AQIEvent struct {
+	City        string  `json:"city"`
+	AQI         int     `json:"aqi"`
+	CO          float64 `json:"co"`
+	NO2         float64 `json:"no2"`
+	PM10        float64 `json:"pm10"`
+	PM25        float64 `json:"pm25"`
+	Temperature float64 `json:"temperature"`
+	Timestamp   int64   `json:"timestamp"`
+	Latitude    float64 `json:"latitude"`
+	Longitude   float64 `json:"longitude"`
 }
 
 func fetchData(url string, host string) ([]byte, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	req, _ := http.NewRequest("GET", url, nil)
-	req.Header.Add("x-rapidapi-key", apiKey)
-	req.Header.Add("x-rapidapi-host", host)
 
 	res, err := client.Do(req)
 	if err != nil {
@@ -65,42 +103,107 @@ func fetchData(url string, host string) ([]byte, error) {
 	return io.ReadAll(res.Body)
 }
 
-func pollEvents() {
-	ticker := time.NewTicker(8 * time.Hour)
-	for range ticker.C {
-		fmt.Println("[Events] Checking next events...")
-		url := "https://" + apiHostEvents + "/events/upcoming?hours=24"
-		body, err := fetchData(url, apiHostEvents)
-		if err != nil {
-			fmt.Println("Error Events API:", err)
-			continue
-		}
+// Save data to file for debugging
+func saveToFile(filename string, data []byte) error {
+	if err := os.MkdirAll("./output", 0755); err != nil {
+		return err
+	}
 
-		var resp EventResponse
-		json.Unmarshal(body, &resp)
+	file, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
 
-		for _, ev := range resp.Events {
-			if ev.IsMedalEvent {
-				fmt.Printf(" ALERT: Final coming: %s\n", ev.Discipline)
-				//TODO: Send to Kafka
-			}
-		}
+	_, err = file.Write(data)
+	return err
+}
+
+func sendToKafka(topic string, event AQIEvent) error {
+	conn, err := kafkago.DialLeader(context.Background(), "tcp", kafkaBroker, topic, 0)
+	if err != nil {
+		return fmt.Errorf("failed to connect to Kafka: %w", err)
+	}
+	defer conn.Close()
+
+	conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+
+	eventJSON, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("failed to marshal event: %w", err)
+	}
+
+	_, err = conn.WriteMessages(
+		kafkago.Message{
+			Key:   []byte(event.City),
+			Value: eventJSON,
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to write message: %w", err)
+	}
+
+	return nil
+}
+
+func transformToEvent(city string, aqiResp AQIResponse) AQIEvent {
+	return AQIEvent{
+		City:        city,
+		AQI:         aqiResp.Data.AQI,
+		CO:          aqiResp.Data.IAQI.CO.V,
+		NO2:         aqiResp.Data.IAQI.NO2.V,
+		PM10:        aqiResp.Data.IAQI.PM10.V,
+		PM25:        aqiResp.Data.IAQI.PM25.V,
+		Temperature: aqiResp.Data.IAQI.Temp.V,
+		Timestamp:   aqiResp.Data.Time.V,
+		Latitude:    aqiResp.Data.City.Geo[0],
+		Longitude:   aqiResp.Data.City.Geo[1],
 	}
 }
 
-func pollMedals() {
-	ticker := time.NewTicker(12 * time.Hour)
-	for range ticker.C {
-		fmt.Println("[Medals] Checking medal standings...")
-		url := "https://" + apiHostMedals + "/medals/countries?year=2026"
-		_, err := fetchData(url, apiHostMedals) // We can ignore the response for now, just checking if API is reachable
-		if err != nil {
-			fmt.Println("Error Medals API:", err)
-			continue
-		}
+func pollAQI(city string, wg *sync.WaitGroup) {
+	defer wg.Done()
 
-		//TODO: Process medal standings and send to Kafka
-		fmt.Println("Medal standings updated.")
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	pollCity(city)
+
+	for range ticker.C {
+		pollCity(city)
+	}
+}
+
+func pollCity(city string) {
+	fmt.Println("Checking AQI for city:", city)
+	url := fmt.Sprintf("https://%s/feed/%s/?token=%s", apiHost, city, apiKey)
+
+	body, err := fetchData(url, apiHost)
+	if err != nil {
+		fmt.Printf("[%s] Error fetching AQI: %v\n", city, err)
+		return
+	}
+
+	// Parse JSON response
+	var aqiResp AQIResponse
+	if err := json.Unmarshal(body, &aqiResp); err != nil {
+		fmt.Printf("[%s] Error parsing AQI JSON: %v\n", city, err)
+		return
+	}
+
+	if aqiResp.Status != "ok" {
+		fmt.Printf("[%s] API returned non-ok status: %s\n", city, aqiResp.Status)
+		return
+	}
+
+	// Transform to event
+	event := transformToEvent(city, aqiResp)
+
+	// Send to Kafka
+	if err := sendToKafka("aqi-raw", event); err != nil {
+		fmt.Printf("[%s] Error sending to Kafka: %v", city, err)
+	} else {
+		fmt.Printf("[%s] ✅ Sent to Kafka - AQI: %d\n", city, event.AQI)
 	}
 }
 
@@ -108,8 +211,23 @@ func pollMedals() {
 func main() {
 	fmt.Println("Starting Poller...")
 
-	go pollEvents()
-	go pollMedals()
+	// List of cities to monitor
+	cities := []string{
+		"milan",
+		"rome",
+		"venice",
+		"turin",
+		"naples",
+	}
 
-	select {} // Block main from exiting
+	var wg sync.WaitGroup
+
+	// Start a goroutine for each city
+	for _, city := range cities {
+		wg.Add(1)
+		go pollAQI(city, &wg)
+	}
+
+	// Wait indefinitely (or until all goroutines finish, which they won't in this case)
+	wg.Wait()
 }

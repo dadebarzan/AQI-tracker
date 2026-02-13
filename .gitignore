@@ -3,3 +3,5 @@ vendor/
 *.exe
 *.log
 *.tmp
+output/
+*.json
