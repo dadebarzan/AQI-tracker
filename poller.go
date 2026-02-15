@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
@@ -23,6 +24,14 @@ var kafkaBroker string
 var kafkaWriter *kafkago.Writer
 var httpClient *http.Client
 var cities []City
+
+const (
+	maxConcurrentRequests = 20
+	maxStartupJitter      = 30 * time.Second
+	pollInterval          = 5 * time.Minute
+)
+
+var expectedCSVHeader = []string{"name", "country", "continent"}
 
 func init() {
 	// Load .env file
@@ -146,24 +155,47 @@ func loadCitiesFromCSV(filename string) ([]City, error) {
 	reader := csv.NewReader(file)
 	reader.TrimLeadingSpace = true
 
-	// Read header
-	header, err := reader.Read()
-	if err != nil {
-		return nil, fmt.Errorf("failed to read CSV header: %w", err)
+	// Validate and skip header
+	if err := validateCSVHeader(reader); err != nil {
+		return nil, err
 	}
 
-	// Validate header
-	expectedHeader := []string{"name", "country", "continent"}
+	// Read city records
+	cities, err := readCityRecords(reader)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(cities) == 0 {
+		return nil, fmt.Errorf("no valid cities found in CSV")
+	}
+
+	return cities, nil
+}
+
+func validateCSVHeader(reader *csv.Reader) error {
+	header, err := reader.Read()
+	if err != nil {
+		return fmt.Errorf("failed to read CSV header: %w", err)
+	}
+
+	if len(header) != len(expectedCSVHeader) {
+		return fmt.Errorf("invalid CSV header length: expected %d columns, got %d", len(expectedCSVHeader), len(header))
+	}
+
 	for i, h := range header {
-		if h != expectedHeader[i] {
-			return nil, fmt.Errorf("unexpected CSV header: got %v, want %v", header, expectedHeader)
+		if h != expectedCSVHeader[i] {
+			return fmt.Errorf("invalid CSV header at column %d: expected '%s', got '%s'", i+1, expectedCSVHeader[i], h)
 		}
 	}
 
-	var cities []City
-	lineNum := 1
+	return nil
+}
 
-	// Read all records
+func readCityRecords(reader *csv.Reader) ([]City, error) {
+	var cities []City
+	lineNum := 2 // First data line after header
+
 	for {
 		record, err := reader.Read()
 		if err == io.EOF {
@@ -172,15 +204,17 @@ func loadCitiesFromCSV(filename string) ([]City, error) {
 		if err != nil {
 			return nil, fmt.Errorf("error reading CSV at line %d: %w", lineNum, err)
 		}
-		lineNum++
 
-		if len(record) != 3 {
-			log.Printf("Warning: skipping malformed line %d: expected 3 fields, got %d", lineNum, len(record))
+		// Validate record length
+		if len(record) != len(expectedCSVHeader) {
+			log.Printf("Warning: skipping malformed line %d: expected %d fields, got %d", lineNum, len(expectedCSVHeader), len(record))
+			lineNum++
 			continue
 		}
 
 		// Skip empty lines
 		if record[0] == "" {
+			lineNum++
 			continue
 		}
 
@@ -190,10 +224,7 @@ func loadCitiesFromCSV(filename string) ([]City, error) {
 			Continent: record[2],
 		}
 		cities = append(cities, city)
-	}
-
-	if len(cities) == 0 {
-		return nil, fmt.Errorf("no valid cities found in CSV")
+		lineNum++
 	}
 
 	return cities, nil
@@ -281,20 +312,26 @@ func buildAQIURL(city string) (string, error) {
 	return u.String(), nil
 }
 
-func pollAQI(city string, wg *sync.WaitGroup) {
+func pollAQI(city string, sem chan struct{}, wg *sync.WaitGroup) {
 	defer wg.Done()
 
-	ticker := time.NewTicker(5 * time.Minute)
+	jitter := time.Duration(rand.Int63n(int64(maxStartupJitter)))
+	time.Sleep(jitter)
+
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
-	pollCity(city)
+	pollCity(city, sem)
 
 	for range ticker.C {
-		pollCity(city)
+		pollCity(city, sem)
 	}
 }
 
-func pollCity(city string) {
+func pollCity(city string, sem chan struct{}) {
+	sem <- struct{}{}
+	defer func() { <-sem }()
+
 	log.Printf("Checking AQI for city: %s", city)
 
 	apiURL, err := buildAQIURL(city)
@@ -349,13 +386,15 @@ func main() {
 		log.Printf("Shutdown complete")
 	}()
 
-	log.Printf("Monitoring %d cities: %v", len(cities), cities)
+	log.Printf("Monitoring %d cities", len(cities))
+
+	sem := make(chan struct{}, maxConcurrentRequests)
 
 	var wg sync.WaitGroup
 
 	for _, city := range cities {
 		wg.Add(1)
-		go pollAQI(city.Name, &wg)
+		go pollAQI(city.Name, sem, &wg)
 	}
 
 	// Wait indefinitely (or until all goroutines finish, which they won't in this case)
