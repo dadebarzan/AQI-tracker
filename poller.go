@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,6 +22,7 @@ var apiHost string
 var kafkaBroker string
 var kafkaWriter *kafkago.Writer
 var httpClient *http.Client
+var cities []City
 
 func init() {
 	// Load .env file
@@ -37,6 +39,15 @@ func init() {
 	if kafkaBroker == "" {
 		kafkaBroker = "kafka:29092" // Default
 	}
+
+	// Load cities from CSV
+	var err error
+	cities, err = loadCitiesFromCSV("cities.csv")
+	if err != nil {
+		log.Fatalf("Failed to load cities from CSV: %v", err)
+	}
+
+	log.Printf("Loaded %d cities from CSV", len(cities))
 
 	// Initialize shared HTTP client with connection pooling
 	httpClient = &http.Client{
@@ -65,6 +76,12 @@ func init() {
 }
 
 // --- Data Structures (JSON Mapping) ---
+type City struct {
+	Name      string
+	Country   string
+	Continent string
+}
+
 type AQIResponse struct {
 	Status string  `json:"status"`
 	Data   AQIData `json:"data"`
@@ -117,6 +134,69 @@ type AQIEvent struct {
 	Timestamp   int64   `json:"timestamp"`
 	Latitude    float64 `json:"latitude"`
 	Longitude   float64 `json:"longitude"`
+}
+
+func loadCitiesFromCSV(filename string) ([]City, error) {
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open cities CSV: %w", err)
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	reader.TrimLeadingSpace = true
+
+	// Read header
+	header, err := reader.Read()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read CSV header: %w", err)
+	}
+
+	// Validate header
+	expectedHeader := []string{"name", "country", "continent"}
+	for i, h := range header {
+		if h != expectedHeader[i] {
+			return nil, fmt.Errorf("unexpected CSV header: got %v, want %v", header, expectedHeader)
+		}
+	}
+
+	var cities []City
+	lineNum := 1
+
+	// Read all records
+	for {
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("error reading CSV at line %d: %w", lineNum, err)
+		}
+		lineNum++
+
+		if len(record) != 3 {
+			log.Printf("Warning: skipping malformed line %d: expected 3 fields, got %d", lineNum, len(record))
+			continue
+		}
+
+		// Skip empty lines
+		if record[0] == "" {
+			continue
+		}
+
+		city := City{
+			Name:      record[0],
+			Country:   record[1],
+			Continent: record[2],
+		}
+		cities = append(cities, city)
+	}
+
+	if len(cities) == 0 {
+		return nil, fmt.Errorf("no valid cities found in CSV")
+	}
+
+	return cities, nil
 }
 
 func fetchData(requestURL string) ([]byte, error) {
@@ -269,22 +349,13 @@ func main() {
 		log.Printf("Shutdown complete")
 	}()
 
-	// List of cities to monitor
-	cities := []string{
-		"milan",
-		"rome",
-		"venice",
-		"turin",
-		"naples",
-	}
-
 	log.Printf("Monitoring %d cities: %v", len(cities), cities)
 
 	var wg sync.WaitGroup
 
 	for _, city := range cities {
 		wg.Add(1)
-		go pollAQI(city, &wg)
+		go pollAQI(city.Name, &wg)
 	}
 
 	// Wait indefinitely (or until all goroutines finish, which they won't in this case)

@@ -21,5 +21,7 @@ WORKDIR /app
 # Copy the binary from builder
 COPY --from=builder /app/poller .
 
+COPY cities.csv .
+
 # Run the poller
 CMD ["./poller"]
