@@ -7,7 +7,7 @@ brazzaville,congo,africa
 kinshasa,democratic republic of congo,africa
 alexandria,egypt,africa
 cairo,egypt,africa
-addis ababa,ethiopia,africa
+addis-ababa,ethiopia,africa
 accra,ghana,africa
 nairobi,kenya,africa
 tripoli,libya,africa
@@ -22,11 +22,11 @@ lagos,nigeria,africa
 kigali,rwanda,africa
 dakar,senegal,africa
 mogadishu,somalia,africa
-cape town,south africa,africa
+cape-town,south africa,africa
 johannesburg,south africa,africa
 pretoria,south africa,africa
 khartoum,sudan,africa
-dar es salaam,tanzania,africa
+dar-es-salaam,tanzania,africa
 tunis,tunisia,africa
 kampala,uganda,africa
 lusaka,zambia,africa
@@ -37,20 +37,20 @@ baku,azerbaijan,asia
 manama,bahrain,asia
 dhaka,bangladesh,asia
 thimphu,bhutan,asia
-phnom penh,cambodia,asia
+phnom-penh,cambodia,asia
 beijing,china,asia
 changchun,china,asia
 changsha,china,asia
 chengdu,china,asia
 chongqing,china,asia
 guangzhou,china,asia
-hong kong,china,asia
+hong-kong,china,asia
 nanjing,china,asia
 shanghai,china,asia
 shenzhen,china,asia
 tianjin,china,asia
 wuhan,china,asia
-xi an,china,asia
+xi-an,china,asia
 zhengzhou,china,asia
 nicosia,cyprus,asia
 tbilisi,georgia,asia
@@ -65,7 +65,7 @@ lucknow,india,asia
 mumbai,india,asia
 pune,india,asia
 surat,india,asia
-banda aceh,indonesia,asia
+banda-aceh,indonesia,asia
 bandung,indonesia,asia
 jakarta,indonesia,asia
 medan,indonesia,asia
@@ -73,7 +73,7 @@ surabaya,indonesia,asia
 tehran,iran,asia
 baghdad,iraq,asia
 jerusalem,israel,asia
-tel aviv,israel,asia
+tel-aviv,israel,asia
 fukuoka,japan,asia
 kyoto,japan,asia
 osaka,japan,asia
@@ -82,11 +82,11 @@ tokyo,japan,asia
 yokohama,japan,asia
 amman,jordan,asia
 almaty,kazakhstan,asia
-kuwait city,kuwait,asia
+kuwait-city,kuwait,asia
 bishkek,kyrgyzstan,asia
 vientiane,laos,asia
 beirut,lebanon,asia
-kuala lumpur,malaysia,asia
+kuala-lumpur,malaysia,asia
 ulaanbaatar,mongolia,asia
 yangon,myanmar,asia
 kathmandu,nepal,asia
@@ -109,11 +109,11 @@ dushanbe,tajikistan,asia
 bangkok,thailand,asia
 ankara,turkey,asia
 istanbul,turkey,asia
-abu dhabi,united arab emirates,asia
+abu-dhabi,united arab emirates,asia
 dubai,united arab emirates,asia
 tashkent,uzbekistan,asia
 hanoi,vietnam,asia
-ho chi minh city,vietnam,asia
+ho-chi-minh-city,vietnam,asia
 sanaa,yemen,asia
 tirana,albania,europe
 vienna,austria,europe
@@ -153,14 +153,14 @@ chisinau,moldova,europe
 monaco,monaco,europe
 amsterdam,netherlands,europe
 rotterdam,netherlands,europe
-the hague,netherlands,europe
+the-hague,netherlands,europe
 oslo,norway,europe
 warsaw,poland,europe
 lisbon,portugal,europe
 porto,portugal,europe
 bucharest,romania,europe
 moscow,russia,europe
-st petersburg,russia,europe
+st-petersburg,russia,europe
 belgrade,serbia,europe
 bratislava,slovakia,europe
 ljubljana,slovenia,europe
@@ -185,19 +185,19 @@ ottawa,canada,north america
 toronto,canada,north america
 vancouver,canada,north america
 winnipeg,canada,north america
-san jose,costa rica,north america
+san-jose,costa rica,north america
 havana,cuba,north america
-santo domingo,dominican republic,north america
-san salvador,el salvador,north america
-guatemala city,guatemala,north america
+santo-domingo,dominican republic,north america
+san-salvador,el salvador,north america
+guatemala-city,guatemala,north america
 port-au-prince,haiti,north america
 guadalajara,mexico,north america
-mexico city,mexico,north america
+mexico-city,mexico,north america
 monterrey,mexico,north america
 tijuana,mexico,north america
 managua,nicaragua,north america
-panama city,panama,north america
-san juan,puerto rico,north america
+panama-city,panama,north america
+san-juan,puerto rico,north america
 austin,united states,north america
 baltimore,united states,north america
 boston,united states,north america
@@ -208,23 +208,23 @@ denver,united states,north america
 detroit,united states,north america
 houston,united states,north america
 indianapolis,united states,north america
-las vegas,united states,north america
-los angeles,united states,north america
+las-vegas,united states,north america
+los-angeles,united states,north america
 memphis,united states,north america
 miami,united states,north america
 milwaukee,united states,north america
 minneapolis,united states,north america
 nashville,united states,north america
-new orleans,united states,north america
-new york,united states,north america
+new-orleans,united states,north america
+new-york,united states,north america
 philadelphia,united states,north america
 phoenix,united states,north america
-san antonio,united states,north america
-san diego,united states,north america
-san francisco,united states,north america
+san-antonio,united states,north america
+san-diego,united states,north america
+san-francisco,united states,north america
 seattle,united states,north america
 tampa,united states,north america
-washington dc,united states,north america
+washington-dc,united states,north america
 brisbane,australia,oceania
 canberra,australia,oceania
 melbourne,australia,oceania
@@ -233,16 +233,16 @@ sydney,australia,oceania
 suva,fiji,oceania
 auckland,new zealand,oceania
 wellington,new zealand,oceania
-port moresby,papua new guinea,oceania
-buenos aires,argentina,south america
-belo horizonte,brazil,south america
+port-moresby,papua new guinea,oceania
+buenos-aires,argentina,south america
+belo-horizonte,brazil,south america
 brasilia,brazil,south america
 fortaleza,brazil,south america
-porto alegre,brazil,south america
+porto-alegre,brazil,south america
 recife,brazil,south america
-rio de janeiro,brazil,south america
+rio-de-janeiro,brazil,south america
 salvador,brazil,south america
-sao paulo,brazil,south america
+sao-paulo,brazil,south america
 santiago,chile,south america
 bogota,colombia,south america
 medellin,colombia,south america

@@ -53,32 +53,15 @@ services:
       - |
         set -euo pipefail
 
-        echo 'Waiting for Kafka to be ready...'
-        MAX_ATTEMPTS=10
-        SLEEP_SECONDS=5
-
-        ATTEMPT=1
-        while [ "$${ATTEMPT}" -le "$${MAX_ATTEMPTS}" ]; do
-          if kafka-topics --bootstrap-server kafka:29092 --list > /dev/null 2>&1; then
-            echo "Kafka is ready (attempt $${ATTEMPT})."
-            break
-          fi
-
-          echo "Kafka not ready yet (attempt $${ATTEMPT}/$${MAX_ATTEMPTS}), waiting $${SLEEP_SECONDS}s..."
-          sleep "$${SLEEP_SECONDS}"
-          ATTEMPT=$$((ATTEMPT + 1))
-        done
-
-        if ! kafka-topics --bootstrap-server kafka:29092 --list > /dev/null 2>&1; then
-          echo "Kafka did not become ready after $$((MAX_ATTEMPTS * SLEEP_SECONDS)) seconds, exiting."
-          exit 1
-        fi
+        echo 'Kafka reported healthy by Docker, starting setup...'
 
         echo 'Testing Kafka connection...'
         kafka-topics --bootstrap-server kafka:29092 --list
         
-        echo 'Creating topic aqi-raw...'
-        kafka-topics --create --if-not-exists --bootstrap-server kafka:29092 --topic aqi-raw --partitions 10 --replication-factor 1 --config retention.ms=604800000 --config compression.type=snappy
+        RETENTION_MS=604800000
+        
+        echo "Creating topic aqi-raw with retention.ms=$${RETENTION_MS} (7 days)..."
+        kafka-topics --create --if-not-exists --bootstrap-server kafka:29092 --topic aqi-raw --partitions 10 --replication-factor 1 --config retention.ms=$${RETENTION_MS} --config compression.type=snappy
         
         echo 'Topics created successfully!'
         kafka-topics --list --bootstrap-server kafka:29092
@@ -148,6 +131,8 @@ services:
       - KAFKA_BROKER=kafka:29092
       - AQI_API_KEY=${AQI_API_KEY}
       - AQI_API_HOST=${AQI_API_HOST}
+      - NUM_WORKERS=${NUM_WORKERS}
+      - POLL_INTERVAL=${POLL_INTERVAL}
     volumes:
       - ./output:/app/output
     networks:
