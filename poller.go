@@ -2,14 +2,19 @@ package main
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
+	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -21,6 +26,15 @@ var apiHost string
 var kafkaBroker string
 var kafkaWriter *kafkago.Writer
 var httpClient *http.Client
+var cities []City
+var numWorkers int
+var pollInterval time.Duration
+
+const (
+	maxStartupJitter = 1000 * time.Millisecond
+)
+
+var expectedCSVHeader = []string{"name", "country", "continent"}
 
 func init() {
 	// Load .env file
@@ -30,6 +44,38 @@ func init() {
 	apiKey = os.Getenv("AQI_API_KEY")
 	apiHost = os.Getenv("AQI_API_HOST")
 	kafkaBroker = os.Getenv("KAFKA_BROKER")
+
+	numWorkersStr := os.Getenv("NUM_WORKERS")
+	pollIntervalStr := os.Getenv("POLL_INTERVAL")
+
+	if numWorkersStr == "" {
+		numWorkers = 50 // Default
+	} else {
+		var err error
+		numWorkers, err = strconv.Atoi(numWorkersStr)
+		if err != nil {
+			log.Fatalf("Invalid NUM_WORKERS: %v", err)
+		}
+
+		if numWorkers <= 0 {
+			numWorkers = 50 // Fallback to default if invalid
+		}
+	}
+
+	if pollIntervalStr == "" {
+		pollInterval = 10 * time.Minute // Default
+	} else {
+		pollIntervalInt, err := strconv.Atoi(pollIntervalStr)
+		if err != nil {
+			log.Fatalf("Invalid POLL_INTERVAL: %v", err)
+		}
+
+		pollInterval = time.Duration(pollIntervalInt) * time.Minute
+		if pollInterval <= 0 {
+			pollInterval = 10 * time.Minute // Fallback to default if invalid
+		}
+	}
+
 	if apiKey == "" || apiHost == "" {
 		log.Fatal("Missing required environment variables: AQI_API_KEY and AQI_API_HOST")
 	}
@@ -37,6 +83,8 @@ func init() {
 	if kafkaBroker == "" {
 		kafkaBroker = "kafka:29092" // Default
 	}
+
+	rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	// Initialize shared HTTP client with connection pooling
 	httpClient = &http.Client{
@@ -65,6 +113,12 @@ func init() {
 }
 
 // --- Data Structures (JSON Mapping) ---
+type City struct {
+	Name      string
+	Country   string
+	Continent string
+}
+
 type AQIResponse struct {
 	Status string  `json:"status"`
 	Data   AQIData `json:"data"`
@@ -117,6 +171,96 @@ type AQIEvent struct {
 	Timestamp   int64   `json:"timestamp"`
 	Latitude    float64 `json:"latitude"`
 	Longitude   float64 `json:"longitude"`
+}
+
+func loadCitiesFromCSV(filename string) ([]City, error) {
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open cities CSV: %w", err)
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	reader.TrimLeadingSpace = true
+
+	// Validate and skip header
+	if err := validateCSVHeader(reader); err != nil {
+		return nil, err
+	}
+
+	// Read city records
+	cities, err := readCityRecords(reader)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(cities) == 0 {
+		return nil, fmt.Errorf("no valid cities found in CSV")
+	}
+
+	return cities, nil
+}
+
+func validateCSVHeader(reader *csv.Reader) error {
+	header, err := reader.Read()
+	if err != nil {
+		return fmt.Errorf("failed to read CSV header: %w", err)
+	}
+
+	if len(header) != len(expectedCSVHeader) {
+		return fmt.Errorf("invalid CSV header length: expected %d columns, got %d", len(expectedCSVHeader), len(header))
+	}
+
+	for i, h := range header {
+		if h != expectedCSVHeader[i] {
+			return fmt.Errorf("invalid CSV header at column %d: expected '%s', got '%s'", i+1, expectedCSVHeader[i], h)
+		}
+	}
+
+	return nil
+}
+
+func readCityRecords(reader *csv.Reader) ([]City, error) {
+	var cities []City
+	lineNum := 2 // First data line after header
+
+	for {
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("error reading CSV at line %d: %w", lineNum, err)
+		}
+
+		// Validate record length
+		if len(record) != len(expectedCSVHeader) {
+			log.Printf("Warning: skipping malformed line %d: expected %d fields, got %d", lineNum, len(expectedCSVHeader), len(record))
+			lineNum++
+			continue
+		}
+
+		// Skip empty lines
+		if record[0] == "" {
+			lineNum++
+			continue
+		}
+
+		// Check for Country and Continent presence (informational only; city is still added if missing)
+		if record[1] == "" || record[2] == "" {
+			log.Printf("Info: line %d is missing country or continent (optional fields, city will still be added): %v", lineNum, record)
+		}
+
+		city := City{
+			Name:      record[0],
+			Country:   record[1],
+			Continent: record[2],
+		}
+		cities = append(cities, city)
+		lineNum++
+	}
+
+	return cities, nil
 }
 
 func fetchData(requestURL string) ([]byte, error) {
@@ -201,19 +345,6 @@ func buildAQIURL(city string) (string, error) {
 	return u.String(), nil
 }
 
-func pollAQI(city string, wg *sync.WaitGroup) {
-	defer wg.Done()
-
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-
-	pollCity(city)
-
-	for range ticker.C {
-		pollCity(city)
-	}
-}
-
 func pollCity(city string) {
 	log.Printf("Checking AQI for city: %s", city)
 
@@ -255,10 +386,93 @@ func pollCity(city string) {
 	}
 }
 
+// Worker function - processes tasks from the channel
+func worker(id int, tasks <-chan string, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	for task := range tasks {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[Worker %d] Panic recovered: %v", id, r)
+				}
+			}()
+			pollCity(task)
+		}()
+	}
+
+	log.Printf("[Worker %d] Shutting down", id)
+}
+
+// Scheduler - sends poll tasks to workers at regular intervals
+func scheduler(tasks chan<- string, cities []City, interval time.Duration, stopCh <-chan struct{}) {
+	defer close(tasks) // Close channel when scheduler exits
+
+	if len(cities) == 0 {
+		log.Println("No cities configured; scheduler will not start polling")
+		return
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	// Initial poll with jitter
+	log.Println("Starting initial poll with jitter...")
+	for _, city := range cities {
+		go func(c City) {
+			jitter := time.Duration(rand.Int63n(int64(maxStartupJitter)))
+			timer := time.NewTimer(jitter)
+			defer timer.Stop()
+
+			select {
+			case <-timer.C:
+				select {
+				case tasks <- c.Name:
+				case <-stopCh:
+					log.Println("Scheduler stopped during initial poll")
+					return
+				}
+			case <-stopCh:
+				log.Println("Scheduler stopped during initial poll")
+				return
+			}
+		}(city)
+	}
+	log.Println("Initial poll completed")
+
+	// Periodic polling
+	for {
+		select {
+		case <-ticker.C:
+			log.Printf("Scheduling poll for %d cities", len(cities))
+			for _, city := range cities {
+				select {
+				case tasks <- city.Name:
+				case <-stopCh:
+					log.Println("Scheduler stopped during periodic poll")
+					return
+				}
+			}
+		case <-stopCh:
+			log.Println("Scheduler received stop signal")
+			return
+		}
+	}
+}
+
 // --- MAIN ---
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-	log.Printf("Starting AQI Poller service")
+	log.Println("Starting AQI Poller service")
+
+	// Load cities from CSV
+	var err error
+	cities, err = loadCitiesFromCSV("cities.csv")
+	if err != nil {
+		log.Printf("Warning: failed to load cities from CSV, starting with no cities: %v", err)
+	} else {
+		log.Printf("Loaded %d cities from CSV", len(cities))
+	}
 
 	defer func() {
 		log.Println("Shutting down poller...")
@@ -269,24 +483,36 @@ func main() {
 		log.Printf("Shutdown complete")
 	}()
 
-	// List of cities to monitor
-	cities := []string{
-		"milan",
-		"rome",
-		"venice",
-		"turin",
-		"naples",
-	}
+	log.Printf("Monitoring %d cities", len(cities))
 
-	log.Printf("Monitoring %d cities: %v", len(cities), cities)
+	// Create task channel (buffered to avoid blocking scheduler)
+	tasks := make(chan string, len(cities))
 
+	stopCh := make(chan struct{})
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+
+	// Start worker pool
 	var wg sync.WaitGroup
-
-	for _, city := range cities {
+	for i := 1; i <= numWorkers; i++ {
 		wg.Add(1)
-		go pollAQI(city, &wg)
+		go worker(i, tasks, &wg)
+		log.Printf("Started worker %d", i)
 	}
 
-	// Wait indefinitely (or until all goroutines finish, which they won't in this case)
+	// Start scheduler
+	go scheduler(tasks, cities, pollInterval, stopCh)
+
+	// Wait for shutdown signal
+	sig := <-sigCh
+	log.Printf("Received signal %v, initiating graceful shutdown...", sig)
+
+	// Signal scheduler to stop
+	close(stopCh)
+
+	// Wait for all workers to complete
+	log.Println("Waiting for workers to finish...")
 	wg.Wait()
+
+	log.Println("All workers stopped, exiting")
 }

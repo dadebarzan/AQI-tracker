@@ -37,9 +37,58 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
     networks:
       - backend-network
+
+  kafka-setup:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka-setup
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command:
+      - bash
+      - -c
+      - |
+        set -euo pipefail
+
+        echo 'Kafka reported healthy by Docker, starting setup...'
+
+        MAX_ATTEMPTS=10
+        SLEEP_SECONDS=5
+
+        echo "Testing Kafka connection to kafka:29092 (up to $${MAX_ATTEMPTS} attempts)..."
+        for attempt in $$(seq 1 $${MAX_ATTEMPTS}); do
+          if kafka-topics --bootstrap-server kafka:29092 --list >/dev/null 2>&1; then
+            echo "Kafka connection successful on attempt $${attempt}."
+            break
+          fi
+          
+          if [ "$${attempt}" -eq "$${MAX_ATTEMPTS}" ]; then
+            echo "Kafka connection failed after $${MAX_ATTEMPTS} attempts, giving up."
+            exit 1
+          fi
+          
+          echo "Kafka not reachable yet (attempt $${attempt}/$${MAX_ATTEMPTS}), retrying in $${SLEEP_SECONDS}s..."
+          sleep $${SLEEP_SECONDS}
+        done
+        
+        RETENTION_MS=604800000
+        
+        echo "Creating topic aqi-raw with retention.ms=$${RETENTION_MS} (7 days)..."
+        kafka-topics --create --if-not-exists --bootstrap-server kafka:29092 --topic aqi-raw --partitions 10 --replication-factor 1 --config retention.ms=$${RETENTION_MS} --config compression.type=snappy
+        
+        echo 'Topics created successfully!'
+        kafka-topics --list --bootstrap-server kafka:29092
+        
+        echo 'Topic descriptions:'
+        kafka-topics --describe --bootstrap-server kafka:29092 --topic aqi-raw
+
+        echo 'Kafka setup completed successfully!'
+    networks:
+      - backend-network
+    restart: "no"
 
   postgres:
     image: postgres:15-alpine
@@ -87,6 +136,8 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+      kafka-setup:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     environment:
@@ -96,6 +147,8 @@ services:
       - KAFKA_BROKER=kafka:29092
       - AQI_API_KEY=${AQI_API_KEY}
       - AQI_API_HOST=${AQI_API_HOST}
+      - NUM_WORKERS=${NUM_WORKERS}
+      - POLL_INTERVAL=${POLL_INTERVAL}
     volumes:
       - ./output:/app/output
     networks:
