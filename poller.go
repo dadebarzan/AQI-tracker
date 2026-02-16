@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
@@ -26,9 +25,9 @@ var httpClient *http.Client
 var cities []City
 
 const (
-	maxConcurrentRequests = 20
-	maxStartupJitter      = 30 * time.Second
-	pollInterval          = 5 * time.Minute
+	numWorkers       = 25
+	pollInterval     = 5 * time.Minute
+	maxStartupJitter = 20 * time.Second
 )
 
 var expectedCSVHeader = []string{"name", "country", "continent"}
@@ -145,6 +144,10 @@ type AQIEvent struct {
 	Longitude   float64 `json:"longitude"`
 }
 
+type PollTask struct {
+	City string
+}
+
 func loadCitiesFromCSV(filename string) ([]City, error) {
 	file, err := os.Open(filename)
 	if err != nil {
@@ -216,6 +219,11 @@ func readCityRecords(reader *csv.Reader) ([]City, error) {
 		if record[0] == "" {
 			lineNum++
 			continue
+		}
+
+		// Check for Country and Continent presence (not strictly required, but log if missing)
+		if record[1] == "" || record[2] == "" {
+			log.Printf("Warning: line %d is missing country or continent: %v", lineNum, record)
 		}
 
 		city := City{
@@ -312,26 +320,7 @@ func buildAQIURL(city string) (string, error) {
 	return u.String(), nil
 }
 
-func pollAQI(city string, sem chan struct{}, wg *sync.WaitGroup) {
-	defer wg.Done()
-
-	jitter := time.Duration(rand.Int63n(int64(maxStartupJitter)))
-	time.Sleep(jitter)
-
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
-
-	pollCity(city, sem)
-
-	for range ticker.C {
-		pollCity(city, sem)
-	}
-}
-
-func pollCity(city string, sem chan struct{}) {
-	sem <- struct{}{}
-	defer func() { <-sem }()
-
+func pollCity(city string) {
 	log.Printf("Checking AQI for city: %s", city)
 
 	apiURL, err := buildAQIURL(city)
@@ -372,6 +361,47 @@ func pollCity(city string, sem chan struct{}) {
 	}
 }
 
+// Worker function - processes tasks from the channel
+func worker(id int, tasks <-chan PollTask, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	for task := range tasks {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[Worker %d] Panic recovered: %v", id, r)
+				}
+			}()
+			pollCity(task.City)
+		}()
+	}
+
+	log.Printf("[Worker %d] Shutting down", id)
+}
+
+// Scheduler - sends poll tasks to workers at regular intervals
+func scheduler(tasks chan<- PollTask, cities []City, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	// Initial poll with jitter
+	log.Println("Starting initial poll with jitter...")
+	for i, city := range cities {
+		jitter := time.Duration(i) * (maxStartupJitter / time.Duration(len(cities)))
+		time.Sleep(jitter)
+		tasks <- PollTask{City: city.Name}
+	}
+	log.Println("Initial poll completed")
+
+	// Periodic polling
+	for range ticker.C {
+		log.Printf("Scheduling poll for %d cities", len(cities))
+		for _, city := range cities {
+			tasks <- PollTask{City: city.Name}
+		}
+	}
+}
+
 // --- MAIN ---
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
@@ -388,15 +418,21 @@ func main() {
 
 	log.Printf("Monitoring %d cities", len(cities))
 
-	sem := make(chan struct{}, maxConcurrentRequests)
+	// Create task channel (buffered to avoid blocking scheduler)
+	tasks := make(chan PollTask, len(cities))
 
+	// Start worker pool
 	var wg sync.WaitGroup
-
-	for _, city := range cities {
+	for i := 1; i <= numWorkers; i++ {
 		wg.Add(1)
-		go pollAQI(city.Name, sem, &wg)
+		go worker(i, tasks, &wg)
+		log.Printf("Started worker %d", i)
 	}
 
+	// Start scheduler
+	scheduler(tasks, cities, pollInterval)
+
 	// Wait indefinitely (or until all goroutines finish, which they won't in this case)
+	close(tasks)
 	wg.Wait()
 }
