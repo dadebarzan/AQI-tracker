@@ -54,7 +54,25 @@ services:
         set -euo pipefail
 
         echo 'Waiting for Kafka to be ready...'
-        sleep 5
+        MAX_ATTEMPTS=10
+        SLEEP_SECONDS=5
+
+        ATTEMPT=1
+        while [ "$${ATTEMPT}" -le "$${MAX_ATTEMPTS}" ]; do
+          if kafka-topics --bootstrap-server kafka:29092 --list > /dev/null 2>&1; then
+            echo "Kafka is ready (attempt $${ATTEMPT})."
+            break
+          fi
+
+          echo "Kafka not ready yet (attempt $${ATTEMPT}/$${MAX_ATTEMPTS}), waiting $${SLEEP_SECONDS}s..."
+          sleep "$${SLEEP_SECONDS}"
+          ATTEMPT=$$((ATTEMPT + 1))
+        done
+
+        if ! kafka-topics --bootstrap-server kafka:29092 --list > /dev/null 2>&1; then
+          echo "Kafka did not become ready after $$((MAX_ATTEMPTS * SLEEP_SECONDS)) seconds, exiting."
+          exit 1
+        fi
 
         echo 'Testing Kafka connection...'
         kafka-topics --bootstrap-server kafka:29092 --list
@@ -132,7 +150,6 @@ services:
       - AQI_API_HOST=${AQI_API_HOST}
     volumes:
       - ./output:/app/output
-      - ./cities.csv:/app/cities.csv
     networks:
       - backend-network
     restart: unless-stopped
