@@ -55,8 +55,24 @@ services:
 
         echo 'Kafka reported healthy by Docker, starting setup...'
 
-        echo 'Testing Kafka connection...'
-        kafka-topics --bootstrap-server kafka:29092 --list
+        MAX_ATTEMPTS=10
+        SLEEP_SECONDS=5
+
+        echo "Testing Kafka connection to kafka:29092 (up to $${MAX_ATTEMPTS} attempts)..."
+        for attempt in $$(seq 1 $${MAX_ATTEMPTS}); do
+          if kafka-topics --bootstrap-server kafka:29092 --list >/dev/null 2>&1; then
+            echo "Kafka connection successful on attempt $${attempt}."
+            break
+          fi
+          
+          if [ "$${attempt}" -eq "$${MAX_ATTEMPTS}" ]; then
+            echo "Kafka connection failed after $${MAX_ATTEMPTS} attempts, giving up."
+            exit 1
+          fi
+          
+          echo "Kafka not reachable yet (attempt $${attempt}/$${MAX_ATTEMPTS}), retrying in $${SLEEP_SECONDS}s..."
+          sleep $${SLEEP_SECONDS}
+        done
         
         RETENTION_MS=604800000
         

@@ -56,6 +56,10 @@ func init() {
 		if err != nil {
 			log.Fatalf("Invalid NUM_WORKERS: %v", err)
 		}
+
+		if numWorkers <= 0 {
+			numWorkers = 50 // Fallback to default if invalid
+		}
 	}
 
 	if pollIntervalStr == "" {
@@ -65,7 +69,11 @@ func init() {
 		if err != nil {
 			log.Fatalf("Invalid POLL_INTERVAL: %v", err)
 		}
+
 		pollInterval = time.Duration(pollIntervalInt) * time.Minute
+		if pollInterval <= 0 {
+			pollInterval = 10 * time.Minute // Fallback to default if invalid
+		}
 	}
 
 	if apiKey == "" || apiHost == "" {
@@ -411,14 +419,24 @@ func scheduler(tasks chan<- string, cities []City, interval time.Duration, stopC
 	// Initial poll with jitter
 	log.Println("Starting initial poll with jitter...")
 	for _, city := range cities {
-		jitter := time.Duration(rand.Int63n(int64(maxStartupJitter)))
-		time.Sleep(jitter)
-		select {
-		case tasks <- city.Name:
-		case <-stopCh:
-			log.Println("Scheduler stopped during initial poll")
-			return
-		}
+		go func(c City) {
+			jitter := time.Duration(rand.Int63n(int64(maxStartupJitter)))
+			timer := time.NewTimer(jitter)
+			defer timer.Stop()
+
+			select {
+			case <-timer.C:
+				select {
+				case tasks <- c.Name:
+				case <-stopCh:
+					log.Println("Scheduler stopped during initial poll")
+					return
+				}
+			case <-stopCh:
+				log.Println("Scheduler stopped during initial poll")
+				return
+			}
+		}(city)
 	}
 	log.Println("Initial poll completed")
 
