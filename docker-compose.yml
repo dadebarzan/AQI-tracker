@@ -142,6 +142,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      - DB_HOST=postgres
       - DB_USER=${DB_USER}
       - DB_PASS=${DB_PASS}
       - DB_NAME=${DB_NAME}
@@ -150,6 +151,7 @@ services:
       - AQI_API_HOST=${AQI_API_HOST}
       - NUM_WORKERS=${NUM_WORKERS}
       - POLL_INTERVAL=${POLL_INTERVAL}
+      - RELOAD_INTERVAL=${RELOAD_INTERVAL}
     volumes:
       - ./output:/app/output
     networks:
