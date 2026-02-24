@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/csv"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 	kafkago "github.com/segmentio/kafka-go"
 )
 
@@ -26,15 +27,15 @@ var apiHost string
 var kafkaBroker string
 var kafkaWriter *kafkago.Writer
 var httpClient *http.Client
+var db *sql.DB
 var cities []City
 var numWorkers int
 var pollInterval time.Duration
+var reloadInterval time.Duration
 
 const (
 	maxStartupJitter = 1000 * time.Millisecond
 )
-
-var expectedCSVHeader = []string{"name", "country", "continent"}
 
 func init() {
 	// Load .env file
@@ -47,7 +48,7 @@ func init() {
 
 	numWorkersStr := os.Getenv("NUM_WORKERS")
 	pollIntervalStr := os.Getenv("POLL_INTERVAL")
-
+	reloadIntervalStr := os.Getenv("RELOAD_INTERVAL")
 	if numWorkersStr == "" {
 		numWorkers = 50 // Default
 	} else {
@@ -73,6 +74,20 @@ func init() {
 		pollInterval = time.Duration(pollIntervalInt) * time.Minute
 		if pollInterval <= 0 {
 			pollInterval = 10 * time.Minute // Fallback to default if invalid
+		}
+	}
+
+	if reloadIntervalStr == "" {
+		reloadInterval = 60 * time.Minute // Default
+	} else {
+		reloadIntervalInt, err := strconv.Atoi(reloadIntervalStr)
+		if err != nil {
+			log.Fatalf("Invalid RELOAD_INTERVAL: %v", err)
+		}
+
+		reloadInterval = time.Duration(reloadIntervalInt) * time.Minute
+		if reloadInterval <= 0 {
+			reloadInterval = 60 * time.Minute // Fallback to default if invalid
 		}
 	}
 
@@ -110,18 +125,59 @@ func init() {
 	}
 
 	log.Printf("Initialized HTTP client and Kafka writer (broker: %s, topic: aqi-raw)", kafkaBroker)
+
+	// Initialize database connection
+	dbHost := os.Getenv("DB_HOST")
+	if dbHost == "" {
+		dbHost = "postgres" // Default
+	}
+	dbUser := os.Getenv("DB_USER")
+	dbPass := os.Getenv("DB_PASS")
+	dbName := os.Getenv("DB_NAME")
+
+	connStr := fmt.Sprintf("host=%s user=%s password=%s dbname=%s sslmode=disable",
+		dbHost, dbUser, dbPass, dbName)
+
+	var err error
+	db, err = sql.Open("postgres", connStr)
+	if err != nil {
+		log.Fatalf("Failed to open database connection: %v", err)
+	}
+
+	// Set connection pool parameters
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(5 * time.Minute)
+
+	// Wait for database to be ready
+	maxAttempts := 10
+	for i := 1; i <= maxAttempts; i++ {
+		err = db.Ping()
+		if err == nil {
+			log.Println("Successfully connected to the database")
+			break
+		}
+		if i == maxAttempts {
+			log.Fatalf("Database connection failed after %d attempts: %v", maxAttempts, err)
+		}
+		log.Printf("Database not ready (attempt %d/%d failed: %v)", i, maxAttempts, err)
+		time.Sleep(2 * time.Second)
+	}
 }
 
-// --- Data Structures (JSON Mapping) ---
+// --- Data Structures ---
 type City struct {
-	Name      string
-	Country   string
-	Continent string
+	ID         int
+	Name       string
+	Country    string
+	Continent  string
+	ValidEntry bool
+	CreatedAt  time.Time
 }
 
 type AQIResponse struct {
-	Status string  `json:"status"`
-	Data   AQIData `json:"data"`
+	Status string          `json:"status"`
+	Data   json.RawMessage `json:"data"`
 }
 
 type AQIData struct {
@@ -173,94 +229,68 @@ type AQIEvent struct {
 	Longitude   float64 `json:"longitude"`
 }
 
-func loadCitiesFromCSV(filename string) ([]City, error) {
-	file, err := os.Open(filename)
+func loadCitiesFromDB() ([]City, error) {
+	query := `
+        SELECT id, name, country, continent, valid_entry, created_at
+		FROM cities
+		WHERE valid_entry = true
+		ORDER BY name
+	`
+
+	rows, err := db.Query(query)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open cities CSV: %w", err)
+		return nil, fmt.Errorf("failed to query cities: %w", err)
 	}
-	defer file.Close()
+	defer rows.Close()
 
-	reader := csv.NewReader(file)
-	reader.TrimLeadingSpace = true
-
-	// Validate and skip header
-	if err := validateCSVHeader(reader); err != nil {
-		return nil, err
-	}
-
-	// Read city records
-	cities, err := readCityRecords(reader)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(cities) == 0 {
-		return nil, fmt.Errorf("no valid cities found in CSV")
-	}
-
-	return cities, nil
-}
-
-func validateCSVHeader(reader *csv.Reader) error {
-	header, err := reader.Read()
-	if err != nil {
-		return fmt.Errorf("failed to read CSV header: %w", err)
-	}
-
-	if len(header) != len(expectedCSVHeader) {
-		return fmt.Errorf("invalid CSV header length: expected %d columns, got %d", len(expectedCSVHeader), len(header))
-	}
-
-	for i, h := range header {
-		if h != expectedCSVHeader[i] {
-			return fmt.Errorf("invalid CSV header at column %d: expected '%s', got '%s'", i+1, expectedCSVHeader[i], h)
-		}
-	}
-
-	return nil
-}
-
-func readCityRecords(reader *csv.Reader) ([]City, error) {
 	var cities []City
-	lineNum := 2 // First data line after header
+	for rows.Next() {
+		var city City
 
-	for {
-		record, err := reader.Read()
-		if err == io.EOF {
-			break
-		}
+		err := rows.Scan(
+			&city.ID,
+			&city.Name,
+			&city.Country,
+			&city.Continent,
+			&city.ValidEntry,
+			&city.CreatedAt,
+		)
 		if err != nil {
-			return nil, fmt.Errorf("error reading CSV at line %d: %w", lineNum, err)
-		}
-
-		// Validate record length
-		if len(record) != len(expectedCSVHeader) {
-			log.Printf("Warning: skipping malformed line %d: expected %d fields, got %d", lineNum, len(expectedCSVHeader), len(record))
-			lineNum++
-			continue
-		}
-
-		// Skip empty lines
-		if record[0] == "" {
-			lineNum++
-			continue
-		}
-
-		// Check for Country and Continent presence (informational only; city is still added if missing)
-		if record[1] == "" || record[2] == "" {
-			log.Printf("Info: line %d is missing country or continent (optional fields, city will still be added): %v", lineNum, record)
-		}
-
-		city := City{
-			Name:      record[0],
-			Country:   record[1],
-			Continent: record[2],
+			return nil, fmt.Errorf("failed to scan city row: %w", err)
 		}
 		cities = append(cities, city)
-		lineNum++
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating city rows: %w", err)
 	}
 
 	return cities, nil
+}
+
+func markCityAsInvalid(cityName string) error {
+	query := `
+        UPDATE cities 
+        SET valid_entry = false 
+        WHERE name = $1
+    `
+
+	result, err := db.Exec(query, cityName)
+	if err != nil {
+		return fmt.Errorf("failed to update city: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("city not found in database")
+	}
+
+	log.Printf("[%s] ⚠️  Marked as invalid (Unknown station)", cityName)
+	return nil
 }
 
 func fetchData(requestURL string) ([]byte, error) {
@@ -308,18 +338,18 @@ func sendToKafka(ctx context.Context, event AQIEvent) error {
 	return nil
 }
 
-func transformToEvent(city string, aqiResp AQIResponse) AQIEvent {
+func transformToEvent(city string, aqiData AQIData) AQIEvent {
 	return AQIEvent{
 		City:        city,
-		AQI:         aqiResp.Data.AQI,
-		CO:          aqiResp.Data.IAQI.CO.V,
-		NO2:         aqiResp.Data.IAQI.NO2.V,
-		PM10:        aqiResp.Data.IAQI.PM10.V,
-		PM25:        aqiResp.Data.IAQI.PM25.V,
-		Temperature: aqiResp.Data.IAQI.Temp.V,
-		Timestamp:   aqiResp.Data.Time.V,
-		Latitude:    aqiResp.Data.City.Geo[0],
-		Longitude:   aqiResp.Data.City.Geo[1],
+		AQI:         aqiData.AQI,
+		CO:          aqiData.IAQI.CO.V,
+		NO2:         aqiData.IAQI.NO2.V,
+		PM10:        aqiData.IAQI.PM10.V,
+		PM25:        aqiData.IAQI.PM25.V,
+		Temperature: aqiData.IAQI.Temp.V,
+		Timestamp:   aqiData.Time.V,
+		Latitude:    aqiData.City.Geo[0],
+		Longitude:   aqiData.City.Geo[1],
 	}
 }
 
@@ -367,13 +397,43 @@ func pollCity(city string) {
 		return
 	}
 
+	if aqiResp.Status == "error" {
+		var errorMsg string
+		if err := json.Unmarshal(aqiResp.Data, &errorMsg); err == nil {
+			if errorMsg == "Unknown station" {
+				// Mark city as invalid in database
+				if err := markCityAsInvalid(city); err != nil {
+					log.Printf("[%s] Error marking city as invalid: %v", city, err)
+				}
+				return
+			}
+			log.Printf("[%s] API error: %s", city, errorMsg)
+			return
+		}
+		log.Printf("[%s] API returned error status without message", city)
+		return
+	}
+
 	if aqiResp.Status != "ok" {
 		log.Printf("[%s] API returned non-ok status: %s", city, aqiResp.Status)
 		return
 	}
 
+	// Check if data is a string (error) or object
+	var dataStr string
+	if err := json.Unmarshal(aqiResp.Data, &dataStr); err == nil {
+		log.Printf("[%s] API error: %s", city, dataStr)
+		return
+	}
+
+	var aqiData AQIData
+	if err := json.Unmarshal(aqiResp.Data, &aqiData); err != nil {
+		log.Printf("[%s] Error parsing AQI data: %v", city, err)
+		return
+	}
+
 	// Transform to event
-	event := transformToEvent(city, aqiResp)
+	event := transformToEvent(city, aqiData)
 
 	// Send to Kafka with context timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -405,47 +465,65 @@ func worker(id int, tasks <-chan string, wg *sync.WaitGroup) {
 }
 
 // Scheduler - sends poll tasks to workers at regular intervals
-func scheduler(tasks chan<- string, cities []City, interval time.Duration, stopCh <-chan struct{}) {
+func scheduler(tasks chan<- string, citiesPtr *[]City, citiesMutex *sync.RWMutex, pollInterval, reloadInterval time.Duration, stopCh <-chan struct{}) {
 	defer close(tasks) // Close channel when scheduler exits
 
-	if len(cities) == 0 {
-		log.Println("No cities configured; scheduler will not start polling")
-		return
+	pollTicker := time.NewTicker(pollInterval)
+	defer pollTicker.Stop()
+
+	reloadTicker := time.NewTicker(reloadInterval)
+	defer reloadTicker.Stop()
+
+	// Helper function to get current cities safely
+	getCities := func() []City {
+		citiesMutex.RLock()
+		defer citiesMutex.RUnlock()
+		citiesCopy := make([]City, len(*citiesPtr))
+		copy(citiesCopy, *citiesPtr)
+		return citiesCopy
 	}
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	currentCities := getCities()
+	if len(currentCities) == 0 {
+		log.Println("No cities configured yet; waiting for database to populate or reload...")
+	} else {
+		// Initial poll with jitter
+		log.Println("Starting initial poll with jitter...")
+		for _, city := range currentCities {
+			go func(c City) {
+				jitter := time.Duration(rand.Int63n(int64(maxStartupJitter)))
+				timer := time.NewTimer(jitter)
+				defer timer.Stop()
 
-	// Initial poll with jitter
-	log.Println("Starting initial poll with jitter...")
-	for _, city := range cities {
-		go func(c City) {
-			jitter := time.Duration(rand.Int63n(int64(maxStartupJitter)))
-			timer := time.NewTimer(jitter)
-			defer timer.Stop()
-
-			select {
-			case <-timer.C:
 				select {
-				case tasks <- c.Name:
+				case <-timer.C:
+					select {
+					case tasks <- c.Name:
+					case <-stopCh:
+						log.Println("Scheduler stopped during initial poll")
+						return
+					}
 				case <-stopCh:
 					log.Println("Scheduler stopped during initial poll")
 					return
 				}
-			case <-stopCh:
-				log.Println("Scheduler stopped during initial poll")
-				return
-			}
-		}(city)
+			}(city)
+		}
+		log.Println("Initial poll completed")
 	}
-	log.Println("Initial poll completed")
 
 	// Periodic polling
 	for {
 		select {
-		case <-ticker.C:
-			log.Printf("Scheduling poll for %d cities", len(cities))
-			for _, city := range cities {
+		case <-pollTicker.C:
+			currentCities := getCities()
+			if len(currentCities) == 0 {
+				log.Println("No cities to poll (skipping poll cycle)")
+				continue
+			}
+
+			log.Printf("Scheduling poll for %d cities", len(currentCities))
+			for _, city := range currentCities {
 				select {
 				case tasks <- city.Name:
 				case <-stopCh:
@@ -453,6 +531,29 @@ func scheduler(tasks chan<- string, cities []City, interval time.Duration, stopC
 					return
 				}
 			}
+
+		case <-reloadTicker.C:
+			log.Println("Reloading cities from database...")
+			newCities, err := loadCitiesFromDB()
+			if err != nil {
+				log.Printf("Failed to reload cities: %v", err)
+				continue
+			}
+
+			citiesMutex.Lock()
+			oldCount := len(*citiesPtr)
+			*citiesPtr = newCities
+			newCount := len(*citiesPtr)
+			citiesMutex.Unlock()
+
+			if oldCount == 0 && newCount > 0 {
+				log.Printf("Cities loaded: 0 → %d (scheduler now active!)", newCount)
+			} else if newCount != oldCount {
+				log.Printf("Cities reloaded: %d → %d (change: %+d)", oldCount, newCount, newCount-oldCount)
+			} else {
+				log.Printf("Cities reloaded: %d (no changes)", newCount)
+			}
+
 		case <-stopCh:
 			log.Println("Scheduler received stop signal")
 			return
@@ -467,17 +568,23 @@ func main() {
 
 	// Load cities from CSV
 	var err error
-	cities, err = loadCitiesFromCSV("cities.csv")
+	cities, err = loadCitiesFromDB()
 	if err != nil {
-		log.Printf("Warning: failed to load cities from CSV, starting with no cities: %v", err)
+		log.Printf("Warning: failed to load cities from database, starting with no cities: %v", err)
+		cities = []City{}
 	} else {
-		log.Printf("Loaded %d cities from CSV", len(cities))
+		log.Printf("Loaded %d cities from database", len(cities))
 	}
+
+	var citiesMutex sync.RWMutex
 
 	defer func() {
 		log.Println("Shutting down poller...")
 		if err := kafkaWriter.Close(); err != nil {
 			log.Printf("Failed to close Kafka writer: %v", err)
+		}
+		if err := db.Close(); err != nil {
+			log.Printf("Failed to close database: %v", err)
 		}
 		httpClient.CloseIdleConnections()
 		log.Printf("Shutdown complete")
@@ -501,7 +608,7 @@ func main() {
 	}
 
 	// Start scheduler
-	go scheduler(tasks, cities, pollInterval, stopCh)
+	go scheduler(tasks, &cities, &citiesMutex, pollInterval, reloadInterval, stopCh)
 
 	// Wait for shutdown signal
 	sig := <-sigCh
