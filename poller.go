@@ -468,11 +468,6 @@ func worker(id int, tasks <-chan string, wg *sync.WaitGroup) {
 func scheduler(tasks chan<- string, citiesPtr *[]City, citiesMutex *sync.RWMutex, pollInterval, reloadInterval time.Duration, stopCh <-chan struct{}) {
 	defer close(tasks) // Close channel when scheduler exits
 
-	if len(*citiesPtr) == 0 {
-		log.Println("No cities configured; scheduler will not start polling")
-		return
-	}
-
 	pollTicker := time.NewTicker(pollInterval)
 	defer pollTicker.Stop()
 
@@ -488,36 +483,45 @@ func scheduler(tasks chan<- string, citiesPtr *[]City, citiesMutex *sync.RWMutex
 		return citiesCopy
 	}
 
-	// Initial poll with jitter
-	log.Println("Starting initial poll with jitter...")
 	currentCities := getCities()
-	for _, city := range currentCities {
-		go func(c City) {
-			jitter := time.Duration(rand.Int63n(int64(maxStartupJitter)))
-			timer := time.NewTimer(jitter)
-			defer timer.Stop()
+	if len(currentCities) == 0 {
+		log.Println("No cities configured yet; waiting for database to populate or reload...")
+	} else {
+		// Initial poll with jitter
+		log.Println("Starting initial poll with jitter...")
+		for _, city := range currentCities {
+			go func(c City) {
+				jitter := time.Duration(rand.Int63n(int64(maxStartupJitter)))
+				timer := time.NewTimer(jitter)
+				defer timer.Stop()
 
-			select {
-			case <-timer.C:
 				select {
-				case tasks <- c.Name:
+				case <-timer.C:
+					select {
+					case tasks <- c.Name:
+					case <-stopCh:
+						log.Println("Scheduler stopped during initial poll")
+						return
+					}
 				case <-stopCh:
 					log.Println("Scheduler stopped during initial poll")
 					return
 				}
-			case <-stopCh:
-				log.Println("Scheduler stopped during initial poll")
-				return
-			}
-		}(city)
+			}(city)
+		}
+		log.Println("Initial poll completed")
 	}
-	log.Println("Initial poll completed")
 
 	// Periodic polling
 	for {
 		select {
 		case <-pollTicker.C:
 			currentCities := getCities()
+			if len(currentCities) == 0 {
+				log.Println("No cities to poll (skipping poll cycle)")
+				continue
+			}
+
 			log.Printf("Scheduling poll for %d cities", len(currentCities))
 			for _, city := range currentCities {
 				select {
@@ -542,8 +546,10 @@ func scheduler(tasks chan<- string, citiesPtr *[]City, citiesMutex *sync.RWMutex
 			newCount := len(*citiesPtr)
 			citiesMutex.Unlock()
 
-			if newCount != oldCount {
-				log.Printf("✅ Cities reloaded: %d → %d (added/removed: %+d)", oldCount, newCount, newCount-oldCount)
+			if oldCount == 0 && newCount > 0 {
+				log.Printf("Cities loaded: 0 → %d (scheduler now active!)", newCount)
+			} else if newCount != oldCount {
+				log.Printf("Cities reloaded: %d → %d (change: %+d)", oldCount, newCount, newCount-oldCount)
 			} else {
 				log.Printf("Cities reloaded: %d (no changes)", newCount)
 			}
