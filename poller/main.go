@@ -1,4 +1,4 @@
-package poller
+package main
 
 import (
 	"context"
@@ -7,9 +7,12 @@ import (
 	"math/rand"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/joho/godotenv"
 )
 
 const (
@@ -21,8 +24,32 @@ var numWorkers int
 var pollInterval time.Duration
 var reloadInterval time.Duration
 
-func init() {
-	// TODO
+// Helper function
+func getEnvAsInt(key string, defaultVal int) int {
+	valStr := os.Getenv(key)
+	if valStr == "" {
+		return defaultVal
+	}
+
+	val, err := strconv.Atoi(valStr)
+	if err != nil {
+		log.Fatalf("Invalid %s: %v", key, err)
+	}
+
+	if val <= 0 {
+		return defaultVal // Fallback to default if invalid
+	}
+
+	return val
+}
+
+func loadConfig() {
+	numWorkers = getEnvAsInt("NUM_WORKERS", 50)
+	pollInterval = time.Duration(getEnvAsInt("POLL_INTERVAL_SECONDS", 30)) * time.Minute
+	reloadInterval = time.Duration(getEnvAsInt("RELOAD_INTERVAL_SECONDS", 60)) * time.Minute
+
+	log.Printf("Configuration - NUM_WORKERS: %d, POLL_INTERVAL: %s, RELOAD_INTERVAL: %s",
+		numWorkers, pollInterval, reloadInterval)
 }
 
 func transformToEvent(city string, aqiData AQIData) AQIEvent {
@@ -107,7 +134,7 @@ func pollCity(city string) {
 	if err := sendToKafka(ctx, event); err != nil {
 		log.Printf("[%s] Error sending to Kafka: %v", city, err)
 	} else {
-		log.Printf("[%s] ✅ Sent to Kafka - AQI: %d", city, event.AQI)
+		log.Printf("[%s] Sent to Kafka - AQI: %d", city, event.AQI)
 	}
 }
 
@@ -230,6 +257,12 @@ func scheduler(tasks chan<- string, citiesPtr *[]City, citiesMutex *sync.RWMutex
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Println("Starting AQI Poller service")
+
+	_ = godotenv.Load()
+
+	loadConfig()
+	initClients()
+	initDB()
 
 	// Load cities from CSV
 	var err error

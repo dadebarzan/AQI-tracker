@@ -1,15 +1,50 @@
-package poller
+package main
 
 import (
 	"database/sql"
 	"fmt"
 	"log"
+	"os"
+	"time"
 )
 
 var db *sql.DB
 
-func init() {
-	// TODO
+// Initialize the database connection
+func initDB() {
+	dbHost := os.Getenv("DB_HOST")
+	if dbHost == "" {
+		dbHost = "postgres"
+	}
+	dbUser := os.Getenv("DB_USER")
+	dbPass := os.Getenv("DB_PASS")
+	dbName := os.Getenv("DB_NAME")
+
+	connStr := fmt.Sprintf("host=%s user=%s password=%s dbname=%s sslmode=disable",
+		dbHost, dbUser, dbPass, dbName)
+
+	var err error
+	db, err = sql.Open("postgres", connStr)
+	if err != nil {
+		log.Fatalf("Failed to open database connection: %v", err)
+	}
+
+	// Set connection pool parameters
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(5 * time.Minute)
+
+	// Wait for database to be ready
+	maxAttempts := 10
+	for i := 1; i <= maxAttempts; i++ {
+		err = db.Ping()
+		if err == nil {
+			log.Println("Successfully connected to the database")
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
+	log.Fatalf("Database connection failed after %d attempts", maxAttempts)
 }
 
 func loadCitiesFromDB() ([]City, error) {

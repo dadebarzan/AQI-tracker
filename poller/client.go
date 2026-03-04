@@ -1,12 +1,14 @@
-package poller
+package main
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
@@ -18,8 +20,38 @@ var kafkaBroker string
 var kafkaWriter *kafkago.Writer
 var httpClient *http.Client
 
-func init() {
-	// TODO
+func initClients() {
+	apiKey = os.Getenv("AQI_API_KEY")
+	apiHost = os.Getenv("AQI_API_HOST")
+	kafkaBroker = os.Getenv("KAFKA_BROKER")
+
+	if apiKey == "" || apiHost == "" {
+		log.Fatal("Missing required environment variables: AQI_API_KEY and AQI_API_HOST")
+	}
+	if kafkaBroker == "" {
+		kafkaBroker = "kafka:29092" // Default broker address
+	}
+
+	// Initialize shared HTTP client with connection pooling
+	httpClient = &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 10,
+			IdleConnTimeout:     90 * time.Second,
+		},
+	}
+
+	// Initialize Kafka writer
+	kafkaWriter = &kafkago.Writer{
+		Addr:         kafkago.TCP(kafkaBroker),
+		Topic:        "aqi-raw",
+		Balancer:     &kafkago.Hash{},
+		RequiredAcks: kafkago.RequireOne,
+		Compression:  kafkago.Snappy,
+	}
+
+	log.Printf("Initialized HTTP client and Kafka writer (broker: %s)", kafkaBroker)
 }
 
 func fetchData(requestURL string) ([]byte, error) {
