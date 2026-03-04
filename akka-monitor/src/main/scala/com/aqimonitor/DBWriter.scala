@@ -54,7 +54,7 @@ object DBWriter {
       user = dbUser,
       password = dbPassword,
       driver = "org.postgresql.Driver",
-      executor = AsyncExecutor("postgres", numThreads = numThreads)
+      executor = AsyncExecutor("postgres", numThreads = numThreads, queueSize = 1000)
     )
   }
   

@@ -64,7 +64,7 @@ func init() {
 	}
 
 	if pollIntervalStr == "" {
-		pollInterval = 10 * time.Minute // Default
+		pollInterval = 30 * time.Minute // Default
 	} else {
 		pollIntervalInt, err := strconv.Atoi(pollIntervalStr)
 		if err != nil {
@@ -73,7 +73,7 @@ func init() {
 
 		pollInterval = time.Duration(pollIntervalInt) * time.Minute
 		if pollInterval <= 0 {
-			pollInterval = 10 * time.Minute // Fallback to default if invalid
+			pollInterval = 30 * time.Minute // Fallback to default if invalid
 		}
 	}
 

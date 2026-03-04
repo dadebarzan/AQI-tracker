@@ -29,6 +29,7 @@ libraryDependencies ++= Seq(
 assembly / mainClass := Some("com.aqimonitor.Main")
 assembly / assemblyJarName := "akka-monitor.jar"
 assembly / assemblyMergeStrategy := {
+  case PathList("META-INF", "services", xs @ _*) => MergeStrategy.concat
   case PathList("META-INF", xs @ _*) => MergeStrategy.discard
   case "reference.conf" => MergeStrategy.concat
   case x => MergeStrategy.first

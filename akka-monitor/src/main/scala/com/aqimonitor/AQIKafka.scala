@@ -85,6 +85,9 @@ object AQIKafka {
             
             // Save to database
             DBWriter.insertMeasurement(db, measurement).recover {
+              case ex: Exception if ex.getMessage != null && ex.getMessage.contains("duplicate key") =>
+                system.log.warn(s"Duplicate measurement for ${message.city} at ${message.timestamp}, skipping DB insert")
+                0
               case ex: Exception =>
                 system.log.error(s"Failed to insert measurement for ${message.city}: ${ex.getMessage}")
                 0
@@ -101,7 +104,7 @@ object AQIKafka {
     
     source
       .toMat(Sink.ignore)(Keep.right)
-      .run()(system)
+      .run()(akka.stream.Materializer(system))
     
     system.log.info("🚀 Kafka consumer started, listening to topic: aqi-raw")
   }
