@@ -5,3 +5,4 @@ vendor/
 *.tmp
 output/
 *.json
+*.csv

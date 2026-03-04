@@ -1,0 +1,27 @@
+FROM sbtscala/scala-sbt:eclipse-temurin-jammy-17_8_1.9.7_2.13.12 AS builder
+
+WORKDIR /app
+
+# Copy build files
+COPY akka-monitor/build.sbt .
+COPY akka-monitor/project ./project
+
+# Download dependencies
+RUN sbt update
+
+# Copy source code
+COPY akka-monitor/src ./src
+
+# Build fat JAR
+RUN sbt assembly
+
+# Runtime stage
+FROM eclipse-temurin:17-jre-jammy
+
+WORKDIR /app
+
+# Copy JAR from builder
+COPY --from=builder /app/target/scala-2.13/akka-monitor.jar .
+
+# Run the application
+CMD ["java", "-jar", "akka-monitor.jar"]
