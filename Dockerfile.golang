@@ -8,20 +8,18 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 # Copy source code
-COPY *.go ./
+COPY poller/ ./poller/
 
 # Build the application
-RUN go build -o poller .
+RUN go build -o poller ./poller
 
 # Runtime stage
-FROM alpine:latest
+FROM alpine:3.23.3
 
 WORKDIR /app
 
 # Copy the binary from builder
 COPY --from=builder /app/poller .
-
-COPY cities.csv .
 
 # Run the poller
 CMD ["./poller"]
