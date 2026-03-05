@@ -1,4 +1,4 @@
-package main
+package poller
 
 import (
 	"context"
@@ -270,8 +270,8 @@ func loadCitiesFromDB() ([]City, error) {
 
 func markCityAsInvalid(cityName string) error {
 	query := `
-        UPDATE cities 
-        SET valid_entry = false 
+        UPDATE cities
+        SET valid_entry = false
         WHERE name = $1
     `
 

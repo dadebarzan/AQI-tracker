@@ -260,6 +260,8 @@ func main() {
 
 	_ = godotenv.Load()
 
+	rand.New(rand.NewSource(time.Now().UnixNano()))
+
 	loadConfig()
 	initClients()
 	initDB()
