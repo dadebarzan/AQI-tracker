@@ -14,7 +14,7 @@ COPY poller/ ./poller/
 RUN go build -o poller ./poller
 
 # Runtime stage
-FROM alpine:latest
+FROM alpine:3.23.3
 
 WORKDIR /app
 

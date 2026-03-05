@@ -146,6 +146,7 @@ services:
       - DB_USER=${DB_USER}
       - DB_PASS=${DB_PASS}
       - DB_NAME=${DB_NAME}
+      - DB_SSLMODE=disable
       - KAFKA_BROKER=kafka:29092
       - AQI_API_KEY=${AQI_API_KEY}
       - AQI_API_HOST=${AQI_API_HOST}

@@ -271,7 +271,7 @@ func main() {
 	initClients()
 	initDB()
 
-	// Load cities from CSV
+	// Load cities from database
 	var err error
 	cities, err = loadCitiesFromDB()
 	if err != nil {
