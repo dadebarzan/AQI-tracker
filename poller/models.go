@@ -26,7 +26,7 @@ type AQIData struct {
 	Idx         int      `json:"idx"`
 	City        CityInfo `json:"city"`
 	Dominentpol string   `json:"dominentpol"`
-	IAQI        IQAI     `json:"iaqi"`
+	IAQI        IAQI     `json:"iaqi"`
 	Time        TimeInfo `json:"time"`
 }
 
@@ -37,7 +37,7 @@ type CityInfo struct {
 	Location string     `json:"location"`
 }
 
-type IQAI struct {
+type IAQI struct {
 	CO   Pollutant `json:"co"`
 	NO2  Pollutant `json:"no2"`
 	PM10 Pollutant `json:"pm10"`

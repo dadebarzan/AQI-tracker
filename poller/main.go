@@ -45,8 +45,8 @@ func getEnvAsInt(key string, defaultVal int) int {
 
 func loadConfig() {
 	numWorkers = getEnvAsInt("NUM_WORKERS", 50)
-	pollInterval = time.Duration(getEnvAsInt("POLL_INTERVAL_SECONDS", 30)) * time.Minute
-	reloadInterval = time.Duration(getEnvAsInt("RELOAD_INTERVAL_SECONDS", 60)) * time.Minute
+	pollInterval = time.Duration(getEnvAsInt("POLL_INTERVAL", 30)) * time.Minute
+	reloadInterval = time.Duration(getEnvAsInt("RELOAD_INTERVAL", 60)) * time.Minute
 
 	log.Printf("Configuration - NUM_WORKERS: %d, POLL_INTERVAL: %s, RELOAD_INTERVAL: %s",
 		numWorkers, pollInterval, reloadInterval)
@@ -201,7 +201,7 @@ func scheduler(tasks chan<- string, citiesPtr *[]City, citiesMutex *sync.RWMutex
 				}
 			}(city)
 		}
-		log.Println("Initial poll completed")
+		log.Println("Initial poll scheduled (goroutines launched with jitter)")
 	}
 
 	// Periodic polling
@@ -259,8 +259,6 @@ func main() {
 	log.Println("Starting AQI Poller service")
 
 	_ = godotenv.Load()
-
-	rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	loadConfig()
 	initClients()

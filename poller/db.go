@@ -44,9 +44,10 @@ func initDB() {
 			log.Println("Successfully connected to the database")
 			return
 		}
+		log.Printf("Database ping attempt %d/%d failed: %v", i, maxAttempts, err)
 		time.Sleep(2 * time.Second)
 	}
-	log.Fatalf("Database connection failed after %d attempts", maxAttempts)
+	log.Fatalf("Database connection failed after %d attempts: %v", maxAttempts, err)
 }
 
 func loadCitiesFromDB() ([]City, error) {
