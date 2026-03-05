@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"math/rand"
 	"os"
@@ -67,6 +68,44 @@ func transformToEvent(city string, aqiData AQIData) AQIEvent {
 	}
 }
 
+func processAQIResponse(city string, body []byte) (*AQIEvent, error) {
+	var aqiResp AQIResponse
+	if err := json.Unmarshal(body, &aqiResp); err != nil {
+		return nil, fmt.Errorf("Error parsing AQI JSON: %w", err)
+	}
+
+	if aqiResp.Status == "error" {
+		var errorMsg string
+		if err := json.Unmarshal(aqiResp.Data, &errorMsg); err == nil {
+			if errorMsg == "Unknown station" {
+				if err := markCityAsInvalid(city); err != nil {
+					log.Printf("[%s] Error marking city as invalid: %v", city, err)
+				}
+				return nil, fmt.Errorf("unknown station")
+			}
+			return nil, fmt.Errorf("API error: %s", errorMsg)
+		}
+		return nil, fmt.Errorf("API returned error status without message")
+	}
+
+	if aqiResp.Status != "ok" {
+		return nil, fmt.Errorf("API returned non-ok status: %s", aqiResp.Status)
+	}
+
+	var dataStr string
+	if err := json.Unmarshal(aqiResp.Data, &dataStr); err == nil {
+		return nil, fmt.Errorf("API error: %s", dataStr)
+	}
+
+	var aqiData AQIData
+	if err := json.Unmarshal(aqiResp.Data, &aqiData); err != nil {
+		return nil, fmt.Errorf("error parsing AQI data: %w", err)
+	}
+
+	event := transformToEvent(city, aqiData)
+	return &event, nil
+}
+
 func pollCity(city string) {
 	log.Printf("Checking AQI for city: %s", city)
 
@@ -83,55 +122,17 @@ func pollCity(city string) {
 	}
 
 	// Parse JSON response
-	var aqiResp AQIResponse
-	if err := json.Unmarshal(body, &aqiResp); err != nil {
-		log.Printf("[%s] Error parsing AQI JSON: %v", city, err)
+	event, err := processAQIResponse(city, body)
+	if err != nil {
+		log.Printf("[%s] %v", city, err)
 		return
 	}
 
-	if aqiResp.Status == "error" {
-		var errorMsg string
-		if err := json.Unmarshal(aqiResp.Data, &errorMsg); err == nil {
-			if errorMsg == "Unknown station" {
-				// Mark city as invalid in database
-				if err := markCityAsInvalid(city); err != nil {
-					log.Printf("[%s] Error marking city as invalid: %v", city, err)
-				}
-				return
-			}
-			log.Printf("[%s] API error: %s", city, errorMsg)
-			return
-		}
-		log.Printf("[%s] API returned error status without message", city)
-		return
-	}
-
-	if aqiResp.Status != "ok" {
-		log.Printf("[%s] API returned non-ok status: %s", city, aqiResp.Status)
-		return
-	}
-
-	// Check if data is a string (error) or object
-	var dataStr string
-	if err := json.Unmarshal(aqiResp.Data, &dataStr); err == nil {
-		log.Printf("[%s] API error: %s", city, dataStr)
-		return
-	}
-
-	var aqiData AQIData
-	if err := json.Unmarshal(aqiResp.Data, &aqiData); err != nil {
-		log.Printf("[%s] Error parsing AQI data: %v", city, err)
-		return
-	}
-
-	// Transform to event
-	event := transformToEvent(city, aqiData)
-
-	// Send to Kafka with context timeout
+	// Send to Kafka
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := sendToKafka(ctx, event); err != nil {
+	if err := sendToKafka(ctx, *event); err != nil {
 		log.Printf("[%s] Error sending to Kafka: %v", city, err)
 	} else {
 		log.Printf("[%s] Sent to Kafka - AQI: %d", city, event.AQI)
@@ -156,9 +157,57 @@ func worker(id int, tasks <-chan string, wg *sync.WaitGroup) {
 	log.Printf("[Worker %d] Shutting down", id)
 }
 
+func scheduleInitialPoll(cities []City, tasks chan<- string, stopCh <-chan struct{}) {
+	log.Println("Starting initial poll with jitter...")
+	for _, city := range cities {
+		go func(c City) {
+			jitter := time.Duration(rand.Int63n(int64(maxStartupJitter)))
+			timer := time.NewTimer(jitter)
+			defer timer.Stop()
+
+			select {
+			case <-timer.C:
+				select {
+				case tasks <- c.Name:
+				case <-stopCh:
+					log.Println("Scheduler stopped during initial poll")
+					return
+				}
+			case <-stopCh:
+				log.Println("Scheduler stopped during initial poll")
+				return
+			}
+		}(city)
+	}
+	log.Println("Initial poll scheduled (goroutines launched with jitter)")
+}
+
+func handleCitiesReload(citiesPtr *[]City, citiesMutex *sync.RWMutex) {
+	log.Println("Reloading cities from database...")
+	newCities, err := loadCitiesFromDB()
+	if err != nil {
+		log.Printf("Failed to reload cities: %v", err)
+		return
+	}
+
+	citiesMutex.Lock()
+	oldCount := len(*citiesPtr)
+	*citiesPtr = newCities
+	newCount := len(*citiesPtr)
+	citiesMutex.Unlock()
+
+	if oldCount == 0 && newCount > 0 {
+		log.Printf("Cities loaded: 0 → %d (scheduler now active!)", newCount)
+	} else if newCount != oldCount {
+		log.Printf("Cities reloaded: %d → %d (change: %+d)", oldCount, newCount, newCount-oldCount)
+	} else {
+		log.Printf("Cities reloaded: %d (no changes)", newCount)
+	}
+}
+
 // Scheduler - sends poll tasks to workers at regular intervals
 func scheduler(tasks chan<- string, citiesPtr *[]City, citiesMutex *sync.RWMutex, pollInterval, reloadInterval time.Duration, stopCh <-chan struct{}) {
-	defer close(tasks) // Close channel when scheduler exits
+	defer close(tasks)
 
 	pollTicker := time.NewTicker(pollInterval)
 	defer pollTicker.Stop()
@@ -166,7 +215,6 @@ func scheduler(tasks chan<- string, citiesPtr *[]City, citiesMutex *sync.RWMutex
 	reloadTicker := time.NewTicker(reloadInterval)
 	defer reloadTicker.Stop()
 
-	// Helper function to get current cities safely
 	getCities := func() []City {
 		citiesMutex.RLock()
 		defer citiesMutex.RUnlock()
@@ -179,29 +227,7 @@ func scheduler(tasks chan<- string, citiesPtr *[]City, citiesMutex *sync.RWMutex
 	if len(currentCities) == 0 {
 		log.Println("No cities configured yet; waiting for database to populate or reload...")
 	} else {
-		// Initial poll with jitter
-		log.Println("Starting initial poll with jitter...")
-		for _, city := range currentCities {
-			go func(c City) {
-				jitter := time.Duration(rand.Int63n(int64(maxStartupJitter)))
-				timer := time.NewTimer(jitter)
-				defer timer.Stop()
-
-				select {
-				case <-timer.C:
-					select {
-					case tasks <- c.Name:
-					case <-stopCh:
-						log.Println("Scheduler stopped during initial poll")
-						return
-					}
-				case <-stopCh:
-					log.Println("Scheduler stopped during initial poll")
-					return
-				}
-			}(city)
-		}
-		log.Println("Initial poll scheduled (goroutines launched with jitter)")
+		scheduleInitialPoll(currentCities, tasks, stopCh)
 	}
 
 	// Periodic polling
@@ -225,26 +251,7 @@ func scheduler(tasks chan<- string, citiesPtr *[]City, citiesMutex *sync.RWMutex
 			}
 
 		case <-reloadTicker.C:
-			log.Println("Reloading cities from database...")
-			newCities, err := loadCitiesFromDB()
-			if err != nil {
-				log.Printf("Failed to reload cities: %v", err)
-				continue
-			}
-
-			citiesMutex.Lock()
-			oldCount := len(*citiesPtr)
-			*citiesPtr = newCities
-			newCount := len(*citiesPtr)
-			citiesMutex.Unlock()
-
-			if oldCount == 0 && newCount > 0 {
-				log.Printf("Cities loaded: 0 → %d (scheduler now active!)", newCount)
-			} else if newCount != oldCount {
-				log.Printf("Cities reloaded: %d → %d (change: %+d)", oldCount, newCount, newCount-oldCount)
-			} else {
-				log.Printf("Cities reloaded: %d (no changes)", newCount)
-			}
+			handleCitiesReload(citiesPtr, citiesMutex)
 
 		case <-stopCh:
 			log.Println("Scheduler received stop signal")
