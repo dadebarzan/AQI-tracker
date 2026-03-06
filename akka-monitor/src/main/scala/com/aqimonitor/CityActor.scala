@@ -26,22 +26,35 @@ object CityActor {
   sealed trait MeasurementResult
   case object MeasurementProcessed extends MeasurementResult
   final case class AlertTriggered(alertType: String, details: String) extends MeasurementResult
+
+  final case class GetStatus(replyTo: ActorRef[CityStatus]) extends Command
+
+  final case class CityStatus(
+    city: String,
+    currentAqi: Option[Int],
+    ema: Option[Double],
+    co: Option[Double],
+    no2: Option[Double],
+    pm10: Option[Double],
+    pm25: Option[Double],
+    temperature: Option[Double],
+    timestamp: Option[Long]
+  )
   
   private final case class State(
     cityName: String,
     measurements: Queue[Int] = Queue.empty,
+    latestMeasurement: Option[NewMeasurement] = None,
     maxSize: Int = 10,
     unhealthyThreshold: Int = 150,
     spikeMultiplier: Double = 1.3
   ) {
     
-    def addMeasurement(aqi: Int): State = {
-      val updated = measurements.enqueue(aqi)
-      if (updated.size > maxSize) {
-        copy(measurements = updated.dequeue._2)
-      } else {
-        copy(measurements = updated)
-      }
+    def addMeasurement(measurement: NewMeasurement): State = {
+      val updated = measurements.enqueue(measurement.aqi)
+      val newQueue = if (updated.size > maxSize) updated.dequeue._2 else updated
+
+      copy(measurements = newQueue, latestMeasurement = Some(measurement))
     }
     
     def calculateEMA(): Option[Double] = {
@@ -72,6 +85,21 @@ object CityActor {
       message match {
         case m: NewMeasurement =>
           handleMeasurement(context, state, m)
+          
+        case GetStatus(replyTo) =>
+          val status = CityStatus(
+            city = state.cityName,
+            currentAqi = state.latestMeasurement.map(_.aqi),
+            ema = state.calculateEMA(),
+            co = state.latestMeasurement.map(_.co),
+            no2 = state.latestMeasurement.map(_.no2),
+            pm10 = state.latestMeasurement.map(_.pm10),
+            pm25 = state.latestMeasurement.map(_.pm25),
+            temperature = state.latestMeasurement.map(_.temperature),
+            timestamp = state.latestMeasurement.map(_.timestamp)
+          )
+          replyTo ! status
+          Behaviors.same
       }
     }
   }
@@ -120,7 +148,7 @@ object CityActor {
       measurement.replyTo.foreach(_ ! MeasurementProcessed)
     }
     
-    val newState = state.addMeasurement(newAqi)
+    val newState = state.addMeasurement(measurement)
     active(newState)
   }
 }

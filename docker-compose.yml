@@ -164,6 +164,8 @@ services:
         context: .
         dockerfile: Dockerfile.akka
       container_name: akka-monitor
+      ports:
+        - "8081:8080"
       env_file:
         - ./.env
       depends_on:
