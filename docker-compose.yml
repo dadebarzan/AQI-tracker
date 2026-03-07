@@ -1,6 +1,6 @@
 services:
   zookeeper:
-    image: confluentinc/cp-zookeeper:latest
+    image: confluentinc/cp-zookeeper:7.9.1
     container_name: zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
@@ -16,7 +16,7 @@ services:
       - backend-network
 
   kafka:
-    image: confluentinc/cp-kafka:7.5.0
+    image: confluentinc/cp-kafka:7.9.1
     container_name: kafka
     depends_on:
       zookeeper:
@@ -42,7 +42,7 @@ services:
       - backend-network
 
   kafka-setup:
-    image: confluentinc/cp-kafka:7.5.0
+    image: confluentinc/cp-kafka:7.9.1
     container_name: kafka-setup
     depends_on:
       kafka:
@@ -113,7 +113,7 @@ services:
       - backend-network
 
   redpanda-console:
-    image: redpandadata/console:latest
+    image: redpandadata/console:v3.5.1
     container_name: redpanda-console
     depends_on:
       kafka:
@@ -160,28 +160,49 @@ services:
     restart: unless-stopped
 
   akka-monitor:
-      build:
-        context: .
-        dockerfile: Dockerfile.akka
-      container_name: akka-monitor
-      env_file:
-        - ./.env
-      depends_on:
-        kafka:
-          condition: service_healthy
-        kafka-setup:
-          condition: service_completed_successfully
-        postgres:
-          condition: service_healthy
-      environment:
-        - DB_HOST=postgres
-        - DB_NAME=${DB_NAME}
-        - DB_USER=${DB_USER}
-        - DB_PASS=${DB_PASS}
-        - KAFKA_BROKER=kafka:29092
-      networks:
-        - backend-network
-      restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile.akka
+    container_name: akka-monitor
+    ports:
+      - "8081:8080"
+    env_file:
+      - ./.env
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-setup:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    environment:
+      - DB_HOST=postgres
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASS=${DB_PASS}
+      - KAFKA_BROKER=kafka:29092
+      - HTTP_EXPOSED_PORT=8081
+    networks:
+      - backend-network
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.4.0
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    env_file:
+      - ./.env
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GF_SECURITY_ADMIN_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - grafana-data:/var/lib/grafana
+    networks:
+      - backend-network
 
 networks:
   backend-network:
@@ -189,3 +210,4 @@ networks:
 
 volumes:
   postgres-data:
+  grafana-data:
