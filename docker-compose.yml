@@ -16,7 +16,7 @@ services:
       - backend-network
 
   kafka:
-    image: confluentinc/cp-kafka:7.5.0
+    image: confluentinc/cp-kafka:7.9.1
     container_name: kafka
     depends_on:
       zookeeper:
@@ -42,7 +42,7 @@ services:
       - backend-network
 
   kafka-setup:
-    image: confluentinc/cp-kafka:7.5.0
+    image: confluentinc/cp-kafka:7.9.1
     container_name: kafka-setup
     depends_on:
       kafka:

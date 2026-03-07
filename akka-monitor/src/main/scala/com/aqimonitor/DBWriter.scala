@@ -73,7 +73,7 @@ object DBWriter {
       pm10 = Some(measurement.pm10),
       pm25 = Some(measurement.pm25),
       temperature = Some(measurement.temperature),
-      timestamp = new Timestamp(measurement.timestamp)
+      timestamp = new Timestamp(measurement.timestamp * 1000) // Convert seconds to milliseconds
     )
     
     val insertAction = aqiHistory += row
