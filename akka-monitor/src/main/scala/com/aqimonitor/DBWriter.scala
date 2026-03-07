@@ -79,4 +79,13 @@ object DBWriter {
     val insertAction = aqiHistory += row
     db.run(insertAction)
   }
+
+  def getHistory(db: Database, city: String, limit: Int = 24)(implicit ec: ExecutionContext): Future[Seq[AQIHistoryRow]] = {
+    val query = aqiHistory
+      .filter(_.city === city)
+      .sortBy(_.timestamp.desc)
+      .take(limit)
+      
+    db.run(query.result)
+  }
 }

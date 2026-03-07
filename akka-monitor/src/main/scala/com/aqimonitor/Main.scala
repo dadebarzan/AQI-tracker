@@ -24,6 +24,9 @@ object Main extends App {
   
   // Start Kafka consumer
   AQIKafka.start(system, cityActors, db)
+
+  // Start HTTP server
+  HttpServer.start(system, cityActors, db)
   
   system.log.info("=" * 60)
   system.log.info("System ready! Monitoring air quality...")

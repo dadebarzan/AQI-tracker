@@ -164,6 +164,8 @@ services:
         context: .
         dockerfile: Dockerfile.akka
       container_name: akka-monitor
+      ports:
+        - "8081:8080"
       env_file:
         - ./.env
       depends_on:
@@ -183,9 +185,26 @@ services:
         - backend-network
       restart: unless-stopped
 
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - grafana-data:/var/lib/grafana
+    networks:
+      - backend-network
+
 networks:
   backend-network:
     driver: bridge
 
 volumes:
   postgres-data:
+  grafana-data:
