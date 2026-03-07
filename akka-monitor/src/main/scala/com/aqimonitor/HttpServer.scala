@@ -17,7 +17,7 @@ import scala.util.{Failure, Success}
 
 object HttpServer {
 
-  // Costum JsonFormat per java.sql.Timestamp
+  // Custom JsonFormat per java.sql.Timestamp
   implicit object TimestampFormat extends JsonFormat[java.sql.Timestamp] {
     def write(obj: java.sql.Timestamp) = JsNumber(obj.getTime)
     def read(json: JsValue) = json match {
@@ -26,9 +26,13 @@ object HttpServer {
     }
   }
 
+  // Response model for error messages
+  final case class ErrorResponse(error: String)
+
   // Mappers to convert case classes to JSON
   implicit val cityStatusFormat: RootJsonFormat[CityActor.CityStatus] = jsonFormat9(CityActor.CityStatus)
   implicit val aqiHistoryRowFormat: RootJsonFormat[DBWriter.AQIHistoryRow] = jsonFormat11(DBWriter.AQIHistoryRow)
+  implicit val errorResponseFormat: RootJsonFormat[ErrorResponse] = jsonFormat1(ErrorResponse)
 
   def start(
     system: ActorSystem[_], 
@@ -49,10 +53,12 @@ object HttpServer {
                 case Some(actor) =>
                   onComplete(actor.ask(ref => CityActor.GetStatus(ref))) {
                     case Success(status) => complete(status)
-                    case Failure(ex) => complete(StatusCodes.InternalServerError -> ex.getMessage)
+                    case Failure(ex) =>
+                      system.log.error(s"Failed to retrieve real-time data for city: $cityName", ex)
+                      complete(StatusCodes.InternalServerError -> ErrorResponse("Internal server error while retrieving real-time data."))
                   }
                 case None =>
-                  complete(StatusCodes.NotFound -> s"""{"error": "City '$cityName' not found or no data yet"}""")
+                  complete(StatusCodes.NotFound -> ErrorResponse(s"City '$cityName' not found or no data yet"))
               }
             }
           },
@@ -61,9 +67,22 @@ object HttpServer {
             get {
               // optional 'limit' parameter (e.g., /history?limit=10), default to 24
               parameters("limit".as[Int].withDefault(24)) { limit =>
-                onComplete(DBWriter.getHistory(db, cityName, limit)) {
-                  case Success(history) => complete(history)
-                  case Failure(ex) => complete(StatusCodes.InternalServerError -> ex.getMessage)
+                
+                val minLimit = 1
+                val maxLimit = 1000
+                
+                if (limit < minLimit || limit > maxLimit) {
+                  complete(
+                    StatusCodes.BadRequest -> 
+                    ErrorResponse(s"Invalid 'limit' parameter, must be between $minLimit and $maxLimit")
+                  )
+                } else {
+                  onComplete(DBWriter.getHistory(db, cityName, limit)) {
+                    case Success(history) => complete(history)
+                    case Failure(ex) =>
+                      system.log.error(s"Failed to retrieve history data for city: $cityName", ex)
+                      complete(StatusCodes.InternalServerError -> ErrorResponse("Internal server error while retrieving historical data."))
+                  }
                 }
               }
             }
@@ -71,10 +90,17 @@ object HttpServer {
         )
       }
 
-    val port = 8080
-    Http().newServerAt("0.0.0.0", port).bind(route).onComplete {
-      case Success(_) =>
-        system.log.info(s"HTTP REST API online at http://localhost:$port/")
+    val config = system.settings.config
+    val host = config.getString("http.host")
+    val port = config.getInt("http.port")
+    val exposedPort = config.getInt("http.exposed-port")
+
+    Http().newServerAt(host, port).bind(route).onComplete {
+      case Success(binding) =>
+        val address = binding.localAddress
+        system.log.info(s"Server internally bound to ${address.getHostString}:${address.getPort}")
+        system.log.info(s"HTTP REST API online at http://localhost:$exposedPort/")
+        
       case Failure(ex) =>
         system.log.error(s"Failed to bind HTTP endpoint", ex)
         system.terminate()

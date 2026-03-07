@@ -73,7 +73,7 @@ object DBWriter {
       pm10 = Some(measurement.pm10),
       pm25 = Some(measurement.pm25),
       temperature = Some(measurement.temperature),
-      timestamp = new Timestamp(measurement.timestamp * 1000) // Convert to milliseconds
+      timestamp = new Timestamp(measurement.timestamp)
     )
     
     val insertAction = aqiHistory += row
@@ -81,10 +81,12 @@ object DBWriter {
   }
 
   def getHistory(db: Database, city: String, limit: Int = 24)(implicit ec: ExecutionContext): Future[Seq[AQIHistoryRow]] = {
+    val safeLimit = Math.max(1, Math.min(limit, 1000))
+    
     val query = aqiHistory
       .filter(_.city === city)
       .sortBy(_.timestamp.desc)
-      .take(limit)
+      .take(safeLimit)
       
     db.run(query.result)
   }
