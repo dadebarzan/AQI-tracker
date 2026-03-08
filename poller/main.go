@@ -68,6 +68,9 @@ func transformToEvent(city string, aqiData AQIData) AQIEvent {
 	}
 }
 
+// processAQIResponse parses the JSON payload received from the WAQI API.
+// It extracts the core parameters and handles specific errors, such as
+// "Unknown station", to invalidate the city in the database.
 func processAQIResponse(city string, body []byte) (*AQIEvent, error) {
 	var aqiResp AQIResponse
 	if err := json.Unmarshal(body, &aqiResp); err != nil {
@@ -205,7 +208,9 @@ func handleCitiesReload(citiesPtr *[]City, citiesMutex *sync.RWMutex) {
 	}
 }
 
-// Scheduler - sends poll tasks to workers at regular intervals
+// scheduler manages the polling lifecycle.
+// It distributes tasks to workers via channels, adding an initial
+// jitter to avoid flooding the API with simultaneous requests.
 func scheduler(tasks chan<- string, citiesPtr *[]City, citiesMutex *sync.RWMutex, pollInterval, reloadInterval time.Duration, stopCh <-chan struct{}) {
 	defer close(tasks)
 

@@ -51,11 +51,11 @@ class CityActorSpec extends ScalaTestWithActorTestKit with AnyWordSpecLike with 
       val probe = createTestProbe[CityActor.MeasurementResult]()
       val actor = spawn(CityActor("spikeCity", testConfig))
 
-      // Prima misurazione: AQI 50 → stabilisce l'EMA a 50
+      // First measurement: AQI 50 → sets EMA to 50
       actor ! measurement("spikeCity", 50, probe.ref)
       probe.expectMessage(CityActor.MeasurementProcessed)
 
-      // Seconda misurazione: AQI 100 → supera 50 * 1.3 = 65
+      // Second measurement: AQI 100 → EMA is 50, multiplier is 1.3 → threshold is 65 → should trigger SPIKE alert
       actor ! measurement("spikeCity", 100, probe.ref)
 
       val result = probe.receiveMessage()
