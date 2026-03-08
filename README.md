@@ -42,7 +42,7 @@ The project is split into two main microservices communicating asynchronously vi
 
 The Akka HTTP service exposes processed data on port `8081`.
 
-**1. Real-Time Data (In-Memory Actor State)**
+1. **Real-Time Data (In-Memory Actor State)**
 Fetches the current state, AQI, and calculated EMA stored in-memory by the actor for a specific city.
 
 * **Endpoint:** `GET /api/aqi/{city}`
@@ -59,7 +59,7 @@ Fetches the current state, AQI, and calculated EMA stored in-memory by the actor
    }
    ```
 
-**2. Historical Data (Database)**
+2. **Historical Data (Database)**
 Retrieves the history of measurements saved in PostgreSQL.
 
 * **Endpoint:** `GET /api/aqi/{city}/history?limit={N}`
