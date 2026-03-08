@@ -26,6 +26,7 @@ The project is split into two main microservices communicating asynchronously vi
 ### Quickstart
 1. Clone the repository.
 2. Rename the `.env.example` file to `.env` and insert your API key:
+
    ```env
    AQI_API_KEY=your_token_here
    DB_USER=postgres
@@ -47,6 +48,7 @@ Fetches the current state, AQI, and calculated EMA stored in-memory by the actor
 
 * **Endpoint:** `GET /api/aqi/{city}`
 * **Example:** `curl http://localhost:8081/api/aqi/milan`
+
    ```JSON
    {
    "city": "milan",
