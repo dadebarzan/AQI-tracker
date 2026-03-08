@@ -24,6 +24,7 @@ var cities []City
 var numWorkers int
 var pollInterval time.Duration
 var reloadInterval time.Duration
+var invalidateCity = markCityAsInvalid
 
 // Helper function
 func getEnvAsInt(key string, defaultVal int) int {
@@ -68,6 +69,9 @@ func transformToEvent(city string, aqiData AQIData) AQIEvent {
 	}
 }
 
+// processAQIResponse parses the JSON payload received from the WAQI API.
+// It extracts the core parameters and handles specific errors, such as
+// "Unknown station", to invalidate the city in the database.
 func processAQIResponse(city string, body []byte) (*AQIEvent, error) {
 	var aqiResp AQIResponse
 	if err := json.Unmarshal(body, &aqiResp); err != nil {
@@ -78,7 +82,7 @@ func processAQIResponse(city string, body []byte) (*AQIEvent, error) {
 		var errorMsg string
 		if err := json.Unmarshal(aqiResp.Data, &errorMsg); err == nil {
 			if errorMsg == "Unknown station" {
-				if err := markCityAsInvalid(city); err != nil {
+				if err := invalidateCity(city); err != nil {
 					log.Printf("[%s] Error marking city as invalid: %v", city, err)
 				}
 				return nil, fmt.Errorf("unknown station")
@@ -205,7 +209,9 @@ func handleCitiesReload(citiesPtr *[]City, citiesMutex *sync.RWMutex) {
 	}
 }
 
-// Scheduler - sends poll tasks to workers at regular intervals
+// scheduler manages the polling lifecycle.
+// It distributes tasks to workers via channels, adding an initial
+// jitter to avoid flooding the API with simultaneous requests.
 func scheduler(tasks chan<- string, citiesPtr *[]City, citiesMutex *sync.RWMutex, pollInterval, reloadInterval time.Duration, stopCh <-chan struct{}) {
 	defer close(tasks)
 

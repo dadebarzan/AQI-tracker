@@ -24,7 +24,13 @@ libraryDependencies ++= Seq(
   
   // Logging
   "ch.qos.logback" % "logback-classic" % "1.4.11",
-  "com.typesafe.scala-logging" %% "scala-logging" % "3.9.5"
+  "com.typesafe.scala-logging" %% "scala-logging" % "3.9.5",
+
+  // Test
+  "org.scalatest"     %% "scalatest"                 % "3.2.17"       % Test,
+  "com.typesafe.akka" %% "akka-actor-testkit-typed"  % AkkaVersion    % Test,
+  "com.typesafe.akka" %% "akka-http-testkit"         % AkkaHttpVersion % Test,
+  "com.typesafe.akka" %% "akka-stream-testkit" % AkkaVersion    % Test
 )
 
 // Assembly settings for fat JAR

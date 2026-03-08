@@ -5,6 +5,11 @@ import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import scala.collection.immutable.Queue
 import java.time.Instant
 
+/**
+ * CityActor maintains the in-memory state for a single city.
+ * It calculates the EMA (Exponential Moving Average) to detect sudden spikes
+ * and monitors static threshold breaches (e.g., AQI > 150).
+ */
 object CityActor {
   
   sealed trait Command
@@ -125,6 +130,7 @@ object CityActor {
     }
     
     // Alert 2: Sudden spike
+    // Spike calculation: check if the current AQI exceeds the EMA multiplied by the tolerance threshold
     ema.foreach { emaValue =>
       val spikeThreshold = emaValue * state.spikeMultiplier
       if (newAqi > spikeThreshold) {

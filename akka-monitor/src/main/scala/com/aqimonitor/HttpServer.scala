@@ -5,6 +5,7 @@ import akka.actor.typed.scaladsl.AskPattern._
 import akka.http.scaladsl.Http
 import akka.http.scaladsl.model.StatusCodes
 import akka.http.scaladsl.server.Directives._
+import akka.http.scaladsl.server.Route
 import akka.util.Timeout
 import spray.json.DefaultJsonProtocol._
 import spray.json._
@@ -43,53 +44,7 @@ object HttpServer {
     implicit val sys: ActorSystem[_] = system
     implicit val timeout: Timeout = Timeout(3.seconds)
 
-    val route =
-      pathPrefix("api" / "aqi" / Segment) { cityName =>
-        concat(
-          // ROUTE 1: GET /api/aqi/{città} -> Real time data from actor
-          pathEnd {
-            get {
-              cityActors.get(cityName) match {
-                case Some(actor) =>
-                  onComplete(actor.ask(ref => CityActor.GetStatus(ref))) {
-                    case Success(status) => complete(status)
-                    case Failure(ex) =>
-                      system.log.error(s"Failed to retrieve real-time data for city: $cityName", ex)
-                      complete(StatusCodes.InternalServerError -> ErrorResponse("Internal server error while retrieving real-time data."))
-                  }
-                case None =>
-                  complete(StatusCodes.NotFound -> ErrorResponse(s"City '$cityName' not found or no data yet"))
-              }
-            }
-          },
-          // ROUTE 2: GET /api/aqi/{città}/history -> database history
-          path("history") {
-            get {
-              // optional 'limit' parameter (e.g., /history?limit=10), default to 24
-              parameters("limit".as[Int].withDefault(24)) { limit =>
-                
-                val minLimit = 1
-                val maxLimit = 1000
-                
-                if (limit < minLimit || limit > maxLimit) {
-                  complete(
-                    StatusCodes.BadRequest -> 
-                    ErrorResponse(s"Invalid 'limit' parameter, must be between $minLimit and $maxLimit")
-                  )
-                } else {
-                  onComplete(DBWriter.getHistory(db, cityName, limit)) {
-                    case Success(history) => complete(history)
-                    case Failure(ex) =>
-                      system.log.error(s"Failed to retrieve history data for city: $cityName", ex)
-                      complete(StatusCodes.InternalServerError -> ErrorResponse("Internal server error while retrieving historical data."))
-                  }
-                }
-              }
-            }
-          }
-        )
-      }
-
+    val route = createRoute(cityActors, (city, limit) => DBWriter.getHistory(db, city, limit))
     val config = system.settings.config
     val host = config.getString("http.host")
     val port = config.getInt("http.port")
@@ -104,6 +59,57 @@ object HttpServer {
       case Failure(ex) =>
         system.log.error(s"Failed to bind HTTP endpoint", ex)
         system.terminate()
+    }
+  }
+
+  def createRoute(
+    cityActors: scala.collection.concurrent.Map[String, ActorRef[CityActor.Command]],
+    getHistoryData: (String, Int) => scala.concurrent.Future[Seq[DBWriter.AQIHistoryRow]]
+  )(implicit system: ActorSystem[_], timeout: Timeout, ec: ExecutionContext): Route = {
+    pathPrefix("api" / "aqi" / Segment) { cityName =>
+      concat(
+        // ROUTE 1: GET /api/aqi/{città} -> Real time data from actor
+        pathEnd {
+          get {
+            cityActors.get(cityName) match {
+              case Some(actor) =>
+                onComplete(actor.ask(ref => CityActor.GetStatus(ref))) {
+                  case Success(status) => complete(status)
+                  case Failure(ex) =>
+                    system.log.error(s"Failed to retrieve real-time data for city: $cityName", ex)
+                    complete(StatusCodes.InternalServerError -> ErrorResponse("Internal server error while retrieving real-time data."))
+                }
+              case None =>
+                complete(StatusCodes.NotFound -> ErrorResponse(s"City '$cityName' not found or no data yet"))
+            }
+          }
+        },
+        // ROUTE 2: GET /api/aqi/{città}/history -> database history
+        path("history") {
+          get {
+            // optional 'limit' parameter (e.g., /history?limit=10), default to 24
+            parameters("limit".as[Int].withDefault(24)) { limit =>
+              
+              val minLimit = 1
+              val maxLimit = 1000
+              
+              if (limit < minLimit || limit > maxLimit) {
+                complete(
+                  StatusCodes.BadRequest -> 
+                  ErrorResponse(s"Invalid 'limit' parameter, must be between $minLimit and $maxLimit")
+                )
+              } else {
+                onComplete(getHistoryData(cityName, limit)) {
+                  case Success(history) => complete(history)
+                  case Failure(ex) =>
+                    system.log.error(s"Failed to retrieve history data for city: $cityName", ex)
+                    complete(StatusCodes.InternalServerError -> ErrorResponse("Internal server error while retrieving historical data."))
+                }
+              }
+            }
+          }
+        }
+      )
     }
   }
 }
