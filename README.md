@@ -33,4 +33,42 @@ The project is split into two main microservices communicating asynchronously vi
    DB_NAME=aqi_tracker
    ```
 3. Boot up the infrastructure using Docker Compose:
-   ```docker-compose up -d```
+   ```
+   docker-compose up -d
+   ```
+   The system will automatically spin up the databases, Kafka, redpanda-console (for topic inspection), and the two microservices.
+
+## REST API Reference
+
+The Akka HTTP service exposes processed data on port `8081`.
+
+**1. Real-Time Data (In-Memory Actor State)**
+Fetches the current state, AQI, and calculated EMA stored in-memory by the actor for a specific city.
+
+* **Endpoint:** `GET /api/aqi/{city}`
+* **Example:** `curl http://localhost:8081/api/aqi/milan`
+   ```JSON
+   {
+   "city": "milan",
+   "currentAqi": 65,
+   "ema": 62.4,
+   "pm10": 25.0,
+   "pm25": 42.0,
+   "temperature": 18.5,
+   "timestamp": 1773064800
+   }
+   ```
+
+**2. Historical Data (Database)**
+Retrieves the history of measurements saved in PostgreSQL.
+
+* **Endpoint:** `GET /api/aqi/{city}/history?limit={N}`
+* **Parameters:** `limit` (optional, default: 24, max: 1000).
+* **Example:** `curl http://localhost:8081/api/aqi/milan/history?limit=5`
+
+## Testing
+
+The project includes unit and integration test suites for both ecosystems:
+
+* **Go:** Table-Driven Tests and HTTP mocking via `net/http/httptest`.
+* **Scala:** Testing with `ScalaTest`,`akka-actor-testkit-typed`, and `akka-http-testkit` to verify routing and reactive actor logic.
