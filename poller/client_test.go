@@ -7,6 +7,12 @@ import (
 )
 
 func TestFetchData(t *testing.T) {
+	originalClient := httpClient
+
+	t.Cleanup(func() {
+		httpClient = originalClient
+	})
+
 	tests := []struct {
 		name       string
 		statusCode int

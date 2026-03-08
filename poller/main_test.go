@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"strings"
 	"testing"
 )
@@ -115,14 +114,14 @@ func validateAQIResponse(t *testing.T, tt struct {
 }
 
 func TestProcessAQIResponse(t *testing.T) {
-	// sql.Open validates the driver but does not establish a real connection.
-	// This is needed to avoid a nil-pointer panic in markCityAsInvalid.
-	var err error
-	db, err = sql.Open("postgres", "host=localhost user=test dbname=test sslmode=disable")
-	if err != nil {
-		t.Fatalf("failed to open db handle: %v", err)
+	originalInvalidate := invalidateCity
+	invalidateCity = func(city string) error {
+		return nil // Do nothing during tests
 	}
-	defer db.Close()
+
+	t.Cleanup(func() {
+		invalidateCity = originalInvalidate
+	})
 
 	tests := createTests()
 

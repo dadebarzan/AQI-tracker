@@ -44,7 +44,7 @@ object HttpServer {
     implicit val sys: ActorSystem[_] = system
     implicit val timeout: Timeout = Timeout(3.seconds)
 
-    val route = createRoute(cityActors, db)
+    val route = createRoute(cityActors, (city, limit) => DBWriter.getHistory(db, city, limit))
     val config = system.settings.config
     val host = config.getString("http.host")
     val port = config.getInt("http.port")
@@ -64,7 +64,7 @@ object HttpServer {
 
   def createRoute(
     cityActors: scala.collection.concurrent.Map[String, ActorRef[CityActor.Command]],
-    db: Database
+    getHistoryData: (String, Int) => scala.concurrent.Future[Seq[DBWriter.AQIHistoryRow]]
   )(implicit system: ActorSystem[_], timeout: Timeout, ec: ExecutionContext): Route = {
     pathPrefix("api" / "aqi" / Segment) { cityName =>
       concat(
@@ -99,7 +99,7 @@ object HttpServer {
                   ErrorResponse(s"Invalid 'limit' parameter, must be between $minLimit and $maxLimit")
                 )
               } else {
-                onComplete(DBWriter.getHistory(db, cityName, limit)) {
+                onComplete(getHistoryData(cityName, limit)) {
                   case Success(history) => complete(history)
                   case Failure(ex) =>
                     system.log.error(s"Failed to retrieve history data for city: $cityName", ex)

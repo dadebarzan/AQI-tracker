@@ -55,7 +55,7 @@ class HttpServerSpec extends AnyWordSpec with Matchers with ScalatestRouteTest {
 
   private val route = HttpServer.createRoute(
     cityActors,
-    null.asInstanceOf[slick.jdbc.PostgresProfile.backend.Database]
+    getHistoryData = (_, _) => scala.concurrent.Future.successful(Seq.empty)
   )
 
   "GET /api/aqi/{city}" should {
@@ -76,6 +76,13 @@ class HttpServerSpec extends AnyWordSpec with Matchers with ScalatestRouteTest {
         status shouldBe StatusCodes.NotFound
         val result = responseAs[HttpServer.ErrorResponse]
         result.error should include("not found")
+      }
+    }
+
+    "return 200 OK and empty list for history route" in {
+      Get("/api/aqi/milan/history?limit=5") ~> route ~> check {
+        status shouldBe StatusCodes.OK
+        responseAs[String] shouldBe "[]"
       }
     }
   }

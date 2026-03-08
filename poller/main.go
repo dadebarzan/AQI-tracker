@@ -24,6 +24,7 @@ var cities []City
 var numWorkers int
 var pollInterval time.Duration
 var reloadInterval time.Duration
+var invalidateCity = markCityAsInvalid
 
 // Helper function
 func getEnvAsInt(key string, defaultVal int) int {
@@ -81,7 +82,7 @@ func processAQIResponse(city string, body []byte) (*AQIEvent, error) {
 		var errorMsg string
 		if err := json.Unmarshal(aqiResp.Data, &errorMsg); err == nil {
 			if errorMsg == "Unknown station" {
-				if err := markCityAsInvalid(city); err != nil {
+				if err := invalidateCity(city); err != nil {
 					log.Printf("[%s] Error marking city as invalid: %v", city, err)
 				}
 				return nil, fmt.Errorf("unknown station")
