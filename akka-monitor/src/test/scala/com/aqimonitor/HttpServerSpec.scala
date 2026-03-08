@@ -12,6 +12,8 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatest.wordspec.AnyWordSpec
 import spray.json.RootJsonFormat
 
+import com.aqimonitor.HttpServer._
+
 import scala.concurrent.duration._
 import scala.util.{Failure, Success}
 
